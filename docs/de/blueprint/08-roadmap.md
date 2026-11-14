@@ -9,16 +9,16 @@
 - [x] CLI-Werkzeuge (ego init / train / run)
 
 ## Phase 2: Multi-Versions-Unterstützung
-- [x] Vier Standard-Editionen (lite/normal/plus/super)
-- [x] Multi-Basis-Unterstützung (Qwen, Gemma, Phi)
-- [x] Benutzerdefinierte Editionen
-- [x] Versionsverwaltung und Rollback
+- [ ] Vier Standard-Editionen (lite/normal/plus/super)
+- [ ] Multi-Basis-Unterstützung (Qwen, Gemma, Phi)
+- [ ] Benutzerdefinierte Editionen
+- [ ] Versionsverwaltung und Rollback
 
 ## Phase 3: Datenquellen-Erweiterung
-- [x] URL-Datenquellen-Unterstützung
+- [ ] URL-Datenquellen-Unterstützung
 - [ ] Cloud-Speicher-Datenquellen (S3/OSS)
-- [x] Datenquellen-Plugin-Mechanismus
-- [x] Inkrementelle Datensammlung und inkrementelles Training
+- [ ] Datenquellen-Plugin-Mechanismus
+- [ ] Inkrementelle Datensammlung und inkrementelles Training
 
 ## Phase 4: Intelligenz
 - [ ] Automatische Alignment-Bewertung

@@ -9,16 +9,16 @@
 - [x] CLI tools (ego init / train / run)
 
 ## Phase 2: Multi-Version Support
-- [x] Four default editions (lite/normal/plus/super)
-- [x] Multi-base support (Qwen, Gemma, Phi)
-- [x] Custom editions
-- [x] Version management and rollback
+- [ ] Four default editions (lite/normal/plus/super)
+- [ ] Multi-base support (Qwen, Gemma, Phi)
+- [ ] Custom editions
+- [ ] Version management and rollback
 
 ## Phase 3: Data Source Expansion
-- [x] URL data source support
+- [ ] URL data source support
 - [ ] Cloud storage data sources (S3/OSS)
-- [x] Data source plugin mechanism
-- [x] Incremental data collection and incremental training
+- [ ] Data source plugin mechanism
+- [ ] Incremental data collection and incremental training
 
 ## Phase 4: Intelligence
 - [ ] Automatic alignment evaluation

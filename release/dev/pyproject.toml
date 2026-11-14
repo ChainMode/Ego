@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ego-pod"
+description = "Ego Pod MVP — 开箱即用、全自动、隐私优先的个性化 AI 模型训练管线"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ego Project" }]
+keywords = ["ego", "qlora", "lora", "fine-tuning", "privacy", "qwen"]
+dynamic = ["version"]
+dependencies = [
+    "pyyaml>=6.0",
+    "torch>=2.0",
+    "safetensors>=0.4",
+    "numpy>=1.24",
+    "huggingface_hub>=0.20",
+]
+
+[project.scripts]
+ego = "ego_pod.cli:main"
+
+[project.optional-dependencies]
+# 训练后端可选依赖组（按硬件/框架划分，缺省安装仅含 Stub_Backend 可跑通）
+# PEFT 真实训练（跨平台：CPU 与 CUDA 共用；不含仅 CUDA 的 bitsandbytes）
+peft = ["peft>=0.10", "transformers>=4.40", "accelerate>=0.30", "datasets>=2.18"]
+# 4-bit 量化（仅 NVIDIA CUDA；macOS/纯 CPU 平台通常无法安装，故独立分组）
+bitsandbytes = ["bitsandbytes>=0.43"]
+# CUDA QLoRA 一键组（peft + bitsandbytes）
+cuda = ["peft>=0.10", "transformers>=4.40", "accelerate>=0.30", "datasets>=2.18", "bitsandbytes>=0.43"]
+# Unsloth 加速后端（自带 transformers/peft/bitsandbytes 依赖链）
+unsloth = ["unsloth"]
+# Apple MLX 后端（mlx 真实训练本特性暂未落地，仅供探测）
+mlx = ["mlx-lm"]
+# 测试依赖
+test = ["pytest>=7.0", "hypothesis>=6.0"]
+# 一次性安装全部可选后端
+all = ["peft>=0.10", "transformers>=4.40", "accelerate>=0.30", "datasets>=2.18", "bitsandbytes>=0.43", "unsloth", "mlx-lm"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "ego_pod.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: 标记运行较慢的测试（如真实子进程 pip 安装）；默认仍会运行",
+    "real_training: 标记需要真实训练依赖/语料（torch/transformers/peft 等）的测试；对应依赖缺失时应被跳过而非失败",
+    "cuda: 标记需要 NVIDIA CUDA 硬件的测试；无 CUDA 设备时应被跳过而非失败",
+]

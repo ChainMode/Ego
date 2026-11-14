@@ -1,20 +1,33 @@
-# Ignore everything by default
-*
+# === Default: ignore everything at root (keep process/governance files local) ===
+/*
 
-# Allow docs and schema directories
+# === Public deliverables (docs, schema, and Ego Pod Python package) ===
 !/docs/
-!/docs/**
 !/schema/
-!/schema/**
-
-# Allow essential project files
 !/README.md
 !/LICENSE
 !/.gitignore
+!/release/
+/release/*
+!/release/dev/
+/release/dev/*
+!/release/dev/pyproject.toml
+!/release/dev/README.md
+!/release/dev/src/
+!/release/dev/tests/
 
-# Ignore OS files within allowed directories
+# === Exclude build/cache/OS noise inside allowed directories ===
 .DS_Store
-
-# Ignore Python cache within allowed directories
+*.swp
+*.swo
+*~
+Thumbs.db
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.hypothesis/
+.pytest_cache/
+build/
+dist/
+.ego/
+ego-output/
