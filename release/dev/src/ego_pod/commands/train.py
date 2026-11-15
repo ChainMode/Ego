@@ -63,11 +63,13 @@ from ego_pod.config.loader import load as load_config
 from ego_pod.config.schema import EgoConfig
 from ego_pod.config.validators import validate as validate_config
 from ego_pod.exit_codes import EXIT_OK, ConfigError
+from ego_pod.fidelity.metrics import evaluate_corpus_fidelity
 from ego_pod.logging_io import Event, Stage, stage_event
 from ego_pod.trainer.cells import CellSpec
 from ego_pod.trainer.grid import run_grid_training
 from ego_pod.trainer.pipeline import run_training
-from ego_pod.vault.pipeline import run_vault
+from ego_pod.vault.package import MANIFEST_FILENAME
+from ego_pod.vault.pipeline import OUTPUT_DIRNAME, run_vault
 
 __all__ = ["run_train", "DEFAULT_CONFIG_FILENAME"]
 
@@ -256,6 +258,11 @@ def _run_pipeline(config: EgoConfig) -> int:
     normal_edition = config.editions[_NORMAL_EDITION]
     cell_specs = _build_cell_specs(compilation)
     use_grid = any(not spec.is_kernel for spec in cell_specs)
+    prev_manifest = Path.cwd() / OUTPUT_DIRNAME / MANIFEST_FILENAME
+    fidelity_report = evaluate_corpus_fidelity(
+        compilation.corpus_path,
+        previous_manifest_path=prev_manifest,
+    )
 
     if use_grid:
         # 网格路径（R3 / R4）：按 Cell 训练并写出二维网格产物。
@@ -270,6 +277,8 @@ def _run_pipeline(config: EgoConfig) -> int:
             lora_alpha=config.training.lora_alpha,
             training_backend=grid_training.backend_identifier,
             base_model=normal_edition.base,
+            fidelity_report=fidelity_report,
+            include_integrity=True,
         )
         stage_event(Stage.VAULT, Event.END)
     else:
@@ -289,6 +298,8 @@ def _run_pipeline(config: EgoConfig) -> int:
             lora_alpha=config.training.lora_alpha,
             training_backend=training.backend_identifier,
             base_model=normal_edition.base,
+            fidelity_report=fidelity_report,
+            include_integrity=True,
         )
         stage_event(Stage.VAULT, Event.END)
 

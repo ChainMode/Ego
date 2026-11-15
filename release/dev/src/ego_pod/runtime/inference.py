@@ -742,6 +742,7 @@ def load_inference_session(
     backend: Any | None = None,
     stdout: TextIO | None = None,
     selection: LoadSelection | None = None,
+    trusted_public_key_hex: str | None = None,
 ) -> InferenceSession:
     """加载 Ego_Package 并返回一个推理会话（需求 5.1、5.6、5.7、5.10、6.1、12.5、12.9）。
 
@@ -809,6 +810,7 @@ def load_inference_session(
             relpath_by_cell[grid_cell.cell] = grid_cell.relpath
 
     cells: list[tuple[CellKey, Path]] = []
+    selected_rel_paths: list[str] = []
     for cell in selected:
         relpath = relpath_by_cell[cell]
         adapter_path = edition_dir / relpath
@@ -816,6 +818,27 @@ def load_inference_session(
         cell_error_label = f"{_cell_label(cell)} → {relpath}"
         _validate_adapter_file(adapter_path, cell_error_label)
         cells.append((cell, adapter_path))
+        selected_rel_paths.append(Path(edition, relpath).as_posix())
+
+    # 5b. 校验包签名与本次选定 Cell 的 SHA-256 摘要（ADR 0003）。
+    #     未签名且未强制要求公钥时直接通过（向后兼容开发包）；一旦包已签名或
+    #     配置了受信任公钥，任何 manifest / 选定适配器篡改立即以 RuntimeError_ 拒绝。
+    from ego_pod.exit_codes import VaultError
+    from ego_pod.vault.signing import ENV_TRUSTED_PUBKEY_HEX, verify_package_signature
+
+    effective_trusted_pubkey = (
+        trusted_public_key_hex
+        if trusted_public_key_hex is not None
+        else (os.environ.get(ENV_TRUSTED_PUBKEY_HEX) or None)
+    )
+    try:
+        verify_package_signature(
+            root,
+            trusted_public_key_hex=effective_trusted_pubkey,
+            selected_cell_rel_paths=selected_rel_paths,
+        )
+    except VaultError as exc:
+        raise RuntimeError_(f"Ego_Package 签名或完整性校验失败：{exc}") from exc
 
     # 6. 据 manifest.training_backend 分流（需求 5.10、12.9）。
     training_backend = manifest.get("training_backend")

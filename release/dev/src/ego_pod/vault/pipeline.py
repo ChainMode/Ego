@@ -68,6 +68,11 @@ def run_vault(
     version: str | None = None,
     created_at: str | None = None,
     stdout: TextIO | None = None,
+    fidelity_report: dict | None = None,
+    include_integrity: bool = False,
+    base_model_digest: str = "unverified_offline",
+    signing_seed_hex: str | None = None,
+    signer_fay_id: str | None = None,
 ) -> PackageArtifacts | GridPackageArtifacts:
     """把 Trainer 的临时产出持久化为 Ego_Package（需求 10.1、10.5、10.6、10.7、R4-AC7、R6-AC1）。
 
@@ -154,6 +159,11 @@ def run_vault(
             base_model=base_model,
             version=version,
             created_at=created_at,
+            fidelity_report=fidelity_report,
+            include_integrity=include_integrity,
+            base_model_digest=base_model_digest,
+            signing_seed_hex=signing_seed_hex,
+            signer_fay_id=signer_fay_id,
         )
     else:
         # 网格路径：写 kernel.safetensors + <zone>/L<level>.safetensors + manifest.grid。
@@ -166,6 +176,11 @@ def run_vault(
             base_model=base_model,
             version=version,
             created_at=created_at,
+            fidelity_report=fidelity_report,
+            include_integrity=include_integrity,
+            base_model_digest=base_model_digest,
+            signing_seed_hex=signing_seed_hex,
+            signer_fay_id=signer_fay_id,
         )
 
     # --- 4. 校验产物均已存在（R10-AC6 / R4-AC8）-------------------------------

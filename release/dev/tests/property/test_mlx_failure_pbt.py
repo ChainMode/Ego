@@ -73,12 +73,11 @@ def _make_params(draw: st.DrawFn) -> TrainingParams:
     )
 
 
-def _assert_not_implemented_trainer_error(exc: TrainerError) -> None:
-    """断言异常为携带明确「未实现」原因、退出码 1 的 :class:`TrainerError`。"""
+def _assert_loud_trainer_error(exc: TrainerError) -> None:
+    """断言异常为携带明确非空原因、退出码 1 的 :class:`TrainerError`（无静默产出）。"""
 
     message = str(exc)
     assert message  # 非空，携带明确原因。
-    assert "未实现" in message or "未落地" in message
     assert exc.exit_code == EXIT_RUNTIME_FAILURE
 
 
@@ -90,16 +89,21 @@ def _assert_not_implemented_trainer_error(exc: TrainerError) -> None:
 @given(model_id=_model_ids, quantization=_quantizations)
 @settings(max_examples=200, deadline=None)
 def test_mlx_load_base_model_always_raises(model_id: str, quantization: str) -> None:
-    """``MlxBackend.load_base_model`` 对任意入参均抛带原因的 ``TrainerError``。
+    """无 mlx_lm 依赖时 ``MlxBackend.load_base_model`` 对任意入参均抛带原因的 ``TrainerError``。
 
     **Feature: ego-pod-real-trainer, Property 19**
 
     **Validates: Requirements 9.4**
     """
+    from ego_pod.trainer import mlx_backend
+
     backend = MlxBackend()
-    with pytest.raises(TrainerError) as excinfo:
-        backend.load_base_model(model_id, quantization)
-    _assert_not_implemented_trainer_error(excinfo.value)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mlx_backend, "_mlx_lm", None)
+        mp.setitem(__import__("sys").modules, "mlx_lm", None)
+        with pytest.raises(TrainerError) as excinfo:
+            backend.load_base_model(model_id, quantization)
+    _assert_loud_trainer_error(excinfo.value)
 
 
 @given(data=st.data(), corpus_name=_corpus_names)
@@ -121,7 +125,7 @@ def test_mlx_train_always_raises(data: st.DataObject, corpus_name: str) -> None:
     with pytest.raises(TrainerError) as excinfo:
         backend.train(object(), Path(corpus_name), params, _progress)
 
-    _assert_not_implemented_trainer_error(excinfo.value)
+    _assert_loud_trainer_error(excinfo.value)
     # 显式失败：不进入训练循环，故进度回调从未被调用。
     assert calls == []
 
@@ -147,6 +151,6 @@ def test_mlx_export_raises_and_writes_no_file(
     with pytest.raises(TrainerError) as excinfo:
         backend.export_lora_safetensors(object(), target)
 
-    _assert_not_implemented_trainer_error(excinfo.value)
+    _assert_loud_trainer_error(excinfo.value)
     # 关键不变量：未写出任何适配器文件（不静默产出无效适配器）。
     assert not target.exists()

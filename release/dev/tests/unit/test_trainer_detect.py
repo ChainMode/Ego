@@ -270,31 +270,30 @@ def test_cuda_is_available_returns_bool():
 
 
 # ---------------------------------------------------------------------------
-# 未落地 MLX 后端的探测门控保护（防止 Apple Silicon 安装 mlx/all extra 后崩溃）
+# MLX 后端真实训练就绪与软门控回退测试（ADR 0001 + ADR 0004）
 # ---------------------------------------------------------------------------
 
 
-def test_mlx_is_available_returns_false_while_real_training_unimplemented(
+def test_mlx_is_available_when_real_training_implemented_on_apple_silicon(
     monkeypatch,
 ):
-    """即使 mlx_lm 可导入且位于 Apple Silicon，未落地真实训练前 is_available 仍为 False。"""
+    """真实训练落地后（REAL_TRAINING_IMPLEMENTED=True），Apple Silicon + mlx_lm 可用时返回 True；门控置 False 时返回 False。"""
     from ego_pod.trainer import mlx_backend
 
     monkeypatch.setattr(mlx_backend, "_mlx_importable", lambda: True)
     monkeypatch.setattr(mlx_backend, "_is_apple_silicon", lambda: True)
 
-    assert MlxBackend.REAL_TRAINING_IMPLEMENTED is False
-    assert MlxBackend.is_available() is False
-
-    # 当未来真实训练落地将门控开关置为 True 时，同一硬件与依赖条件下即恢复为 True
-    monkeypatch.setattr(MlxBackend, "REAL_TRAINING_IMPLEMENTED", True)
+    assert MlxBackend.REAL_TRAINING_IMPLEMENTED is True
     assert MlxBackend.is_available() is True
 
+    monkeypatch.setattr(MlxBackend, "REAL_TRAINING_IMPLEMENTED", False)
+    assert MlxBackend.is_available() is False
 
-def test_apple_silicon_with_mlx_and_peft_installed_falls_through_to_peft_cpu(
+
+def test_apple_silicon_with_mlx_installed_selects_mlx_and_falls_back_when_absent(
     monkeypatch,
 ):
-    """Apple Silicon 同时安装 mlx 与 peft 时，真实 MlxBackend 被门控跳过并选中 PeftCpuBackend。"""
+    """Apple Silicon 安装 mlx_lm 时优先选中 MlxBackend（优先级 3）；缺失 mlx_lm 时回退至 PeftCpuBackend（优先级 4）。"""
     from ego_pod.trainer import mlx_backend
 
     monkeypatch.setattr(mlx_backend, "_mlx_importable", lambda: True)
@@ -305,12 +304,15 @@ def test_apple_silicon_with_mlx_and_peft_installed_falls_through_to_peft_cpu(
     monkeypatch.setattr(
         PeftCudaBackend, "is_available", classmethod(lambda cls: False)
     )
-    # 刻意不覆盖 MlxBackend.is_available，验证真实门控生效
     monkeypatch.setattr(
         PeftCpuBackend, "is_available", classmethod(lambda cls: True)
     )
 
     backend = detect.detect_backend()
+    assert isinstance(backend, MlxBackend)
+    assert backend.identifier == "mlx"
 
-    assert isinstance(backend, PeftCpuBackend)
-    assert backend.identifier == "peft-cpu"
+    monkeypatch.setattr(mlx_backend, "_mlx_importable", lambda: False)
+    fallback = detect.detect_backend()
+    assert isinstance(fallback, PeftCpuBackend)
+    assert fallback.identifier == "peft-cpu"

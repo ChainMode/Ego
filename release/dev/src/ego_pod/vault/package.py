@@ -177,8 +177,11 @@ def build_manifest(
     version: str | None = None,
     created_at: str | None = None,
     grid: dict | None = None,
+    fidelity_report: dict | None = None,
+    integrity: dict | None = None,
+    signature: dict | None = None,
 ) -> dict:
-    """构造 ``manifest.json`` 的内容字典（需求 10.2、12.9、R4-AC4）。
+    """构造 ``manifest.json`` 的内容字典（需求 10.2、12.9、R4-AC4、Wave 2 契约）。
 
     :param training_backend: Trainer 选中的后端名称（Stub_Backend 为 ``"stub"``），
         作为 stub 标记供 ``ego run`` 识别（需求 12.9）。
@@ -189,15 +192,11 @@ def build_manifest(
         :func:`utc_now_iso8601` 的当前时间。
     :param grid: 可选的 Grid_Descriptor（``manifest.json`` 顶层 ``grid`` 键的值，
         见 :func:`ego_pod.vault.grid_descriptor.build_grid_descriptor`）。
-
-        * ``grid is None``（默认）⇒ 产出与 ego-pod-mvp / ego-pod-real-trainer
-          **逐字节一致**的五字段 manifest（``version`` / ``created_at`` /
-          ``base_model`` / ``editions`` / ``training_backend``，顺序/类型/取值不变，
-          R4-AC4）；**不**追加任何 ``grid`` 键。这正是 Flat_Package 的形状。
-        * ``grid is not None`` ⇒ 在上述五字段之后追加一个 ``grid`` 键
-          （Grid_Package 的形状，R4-AC1）；五字段本身完全不受影响。
-    :returns: 含五个旧字段（以及当 ``grid`` 非 ``None`` 时追加的 ``grid`` 键）的字典。
-    :raises VaultError: 当 ``editions`` 为空或不包含 ``normal`` 时。
+    :param fidelity_report: 可选的人格保真度聚合报告字典（ADR 0002）。
+    :param integrity: 可选的 Tier 1 完整性摘要字典（ADR 0003）。
+    :param signature: 可选的 Tier 2 Ed25519 签名信封字典（ADR 0003）。
+    :returns: 含五个必选字段及按需追加的可选顶层扩展字段的字典。
+    :raises VaultError: 当 ``editions`` 为空或不包含 ``normal``，或扩展字段结构非法时。
     """
 
     edition_list = list(editions)
@@ -218,6 +217,18 @@ def build_manifest(
     # 仅在网格包追加 grid 键；grid=None 时不改动五字段输出（R4-AC1/AC4）。
     if grid is not None:
         payload["grid"] = grid
+    if fidelity_report is not None:
+        from ego_pod.fidelity.metrics import validate_fidelity_report
+
+        try:
+            validate_fidelity_report(fidelity_report)
+        except ValueError as exc:
+            raise VaultError(f"非法的 fidelity_report：{exc}") from exc
+        payload["fidelity_report"] = fidelity_report
+    if integrity is not None:
+        payload["integrity"] = integrity
+    if signature is not None:
+        payload["signature"] = signature
     return payload
 
 
@@ -277,6 +288,63 @@ def _remove_orphans(root: Path) -> None:
                 pass
 
 
+def _resolve_signing_config(
+    signing_seed_hex: str | None,
+    signer_fay_id: str | None,
+) -> tuple[str | None, str | None]:
+    """解析可选包签名参数（显式入参优先，其次读取 ``EGO_SIGNING_SEED_HEX`` / ``EGO_SIGNER_FAY_ID``）。"""
+
+    from ego_pod.vault.signing import ENV_SIGNER_FAY_ID, ENV_SIGNING_SEED_HEX
+
+    raw_seed = (
+        signing_seed_hex
+        if signing_seed_hex is not None
+        else os.environ.get(ENV_SIGNING_SEED_HEX)
+    )
+    raw_fay_id = (
+        signer_fay_id
+        if signer_fay_id is not None
+        else os.environ.get(ENV_SIGNER_FAY_ID)
+    )
+    seed = raw_seed.strip() if isinstance(raw_seed, str) and raw_seed.strip() else None
+    fay_id = (
+        raw_fay_id.strip()
+        if isinstance(raw_fay_id, str) and raw_fay_id.strip()
+        else None
+    )
+    if (seed is None) != (fay_id is None):
+        raise VaultError(
+            "启用包签名时必须同时提供 EGO_SIGNING_SEED_HEX 与 EGO_SIGNER_FAY_ID"
+        )
+    return seed, fay_id
+
+
+def _finalize_manifest_in_staging(
+    tmp_dir: Path,
+    manifest_payload: dict,
+    *,
+    include_integrity: bool,
+    base_model_digest: str,
+    signing_seed_hex: str | None,
+    signer_fay_id: str | None,
+) -> dict:
+    """在暂存区适配器文件就位后，按需写入 Tier 1 ``integrity`` 与 Tier 2 ``signature``。"""
+
+    seed, fay_id = _resolve_signing_config(signing_seed_hex, signer_fay_id)
+    if not include_integrity and seed is None:
+        return manifest_payload
+
+    from ego_pod.vault.signing import compute_package_integrity, sign_manifest
+
+    updated = dict(manifest_payload)
+    updated["integrity"] = compute_package_integrity(
+        tmp_dir, base_model_digest=base_model_digest
+    )
+    if seed is not None and fay_id is not None:
+        updated = sign_manifest(updated, signer_fay_id=fay_id, master_seed=seed)
+    return updated
+
+
 # ---------------------------------------------------------------------------
 # 事务性写入
 # ---------------------------------------------------------------------------
@@ -293,6 +361,11 @@ def write_package(
     editions: tuple[str, ...] = (EDITION_NAME,),
     version: str | None = None,
     created_at: str | None = None,
+    fidelity_report: dict | None = None,
+    include_integrity: bool = False,
+    base_model_digest: str = "unverified_offline",
+    signing_seed_hex: str | None = None,
+    signer_fay_id: str | None = None,
 ) -> PackageArtifacts:
     """把 Trainer 临时产出事务性地写为 Ego_Package（需求 10.2–10.5、12.9）。
 
@@ -329,7 +402,8 @@ def write_package(
             f"Trainer 输出的 LoRA 权重不存在或不是常规文件：{source.resolve()}"
         )
 
-    # 构造产物字典（editions 校验在此触发，先于任何落盘动作）。
+    # 构造产物字典（editions 与签名配置校验在此触发，先于任何落盘动作）。
+    _resolve_signing_config(signing_seed_hex, signer_fay_id)
     config_payload = build_config(
         lora_rank=lora_rank, lora_alpha=lora_alpha, base_model=base_model
     )
@@ -339,6 +413,7 @@ def write_package(
         editions=editions,
         version=version,
         created_at=created_at,
+        fidelity_report=fidelity_report,
     )
 
     root.mkdir(parents=True, exist_ok=True)
@@ -359,6 +434,14 @@ def write_package(
         # 移动 Trainer 输出到暂存区适配器目录（设计文档 §6 步骤 5）。
         shutil.move(str(source), str(tmp_adapters / ADAPTER_FILENAME))
 
+        manifest_payload = _finalize_manifest_in_staging(
+            tmp_dir,
+            manifest_payload,
+            include_integrity=include_integrity,
+            base_model_digest=base_model_digest,
+            signing_seed_hex=signing_seed_hex,
+            signer_fay_id=signer_fay_id,
+        )
         tmp_manifest = tmp_dir / MANIFEST_FILENAME
         _write_json(tmp_manifest, manifest_payload)
 
@@ -368,6 +451,9 @@ def write_package(
 
         # --- 3. 删除历史孤儿项，满足覆盖语义（需求 10.5）---------------------
         _remove_orphans(root)
+    except EgoError:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
     except OSError as exc:
         # I/O 错误：清理 .tmp/ 半成品，保留上一次成功的旧产物（需求 10.7）。
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -403,6 +489,11 @@ def write_grid_package(
     editions: tuple[str, ...] = (EDITION_NAME,),
     version: str | None = None,
     created_at: str | None = None,
+    fidelity_report: dict | None = None,
+    include_integrity: bool = False,
+    base_model_digest: str = "unverified_offline",
+    signing_seed_hex: str | None = None,
+    signer_fay_id: str | None = None,
 ) -> GridPackageArtifacts:
     """把按 Cell 训练的多个适配器事务性地写为 Grid_Package（R4-AC3/AC8/AC9/AC10）。
 
@@ -489,7 +580,8 @@ def write_grid_package(
                 f"Trainer 输出的 Cell LoRA 权重不存在或不是常规文件：{source.resolve()}"
             )
 
-    # 构造产物字典（editions 校验在 build_manifest 内触发，先于任何落盘动作）。
+    # 构造产物字典（editions 与签名配置校验在落盘前触发）。
+    _resolve_signing_config(signing_seed_hex, signer_fay_id)
     config_payload = build_config(
         lora_rank=lora_rank, lora_alpha=lora_alpha, base_model=base_model
     )
@@ -501,6 +593,7 @@ def write_grid_package(
         version=version,
         created_at=created_at,
         grid=grid,
+        fidelity_report=fidelity_report,
     )
 
     root.mkdir(parents=True, exist_ok=True)
@@ -524,6 +617,14 @@ def write_grid_package(
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(dest))
 
+        manifest_payload = _finalize_manifest_in_staging(
+            tmp_dir,
+            manifest_payload,
+            include_integrity=include_integrity,
+            base_model_digest=base_model_digest,
+            signing_seed_hex=signing_seed_hex,
+            signer_fay_id=signer_fay_id,
+        )
         tmp_manifest = tmp_dir / MANIFEST_FILENAME
         _write_json(tmp_manifest, manifest_payload)
 

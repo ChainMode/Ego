@@ -17,6 +17,7 @@ dependencies = [
     "safetensors>=0.4",
     "numpy>=1.24",
     "huggingface_hub>=0.20",
+    "cryptography>=41.0",
 ]
 
 [project.scripts]
@@ -32,7 +33,7 @@ bitsandbytes = ["bitsandbytes>=0.43"]
 cuda = ["peft>=0.10", "transformers>=4.40", "accelerate>=0.30", "datasets>=2.18", "bitsandbytes>=0.43"]
 # Unsloth 加速后端（自带 transformers/peft/bitsandbytes 依赖链）
 unsloth = ["unsloth"]
-# Apple MLX 后端（mlx 真实训练本特性暂未落地，仅供探测）
+# Apple MLX 后端（Apple Silicon 原生 LoRA SFT 训练 + PEFT 兼容导出）
 mlx = ["mlx-lm"]
 # 测试依赖
 test = ["pytest>=7.0", "hypothesis>=6.0"]
