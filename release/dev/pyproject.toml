@@ -7,8 +7,8 @@ name = "ego-pod"
 description = "Ego Pod MVP — 开箱即用、全自动、隐私优先的个性化 AI 模型训练管线"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
-authors = [{ name = "Ego Project" }]
+license = { text = "MIT" }
+authors = [{ name = "ChainMode contributors" }]
 keywords = ["ego", "qlora", "lora", "fine-tuning", "privacy", "qwen"]
 dynamic = ["version"]
 dependencies = [
