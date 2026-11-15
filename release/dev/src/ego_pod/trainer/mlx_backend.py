@@ -10,17 +10,16 @@
   ImportError`` 包裹为模块级哨兵，使 ``detect`` 能防御式地无条件 ``import``
   本模块，即便对应依赖缺失。
 - **本特性（Real Trainer）不落地 MLX 真实训练**。MLX 的张量栈（``mlx``）与
-  ``torch`` / ``peft`` 不兼容，需独立的 SFT/LoRA 实现，超出本次特性范围。因此
-  MLX 后端的 ``is_available`` 仍保持 MVP 判定（``mlx_lm`` 可导入 + Apple
-  Silicon），但三个训练方法（``load_base_model`` / ``train`` /
-  ``export_lora_safetensors``）均**显式抛出携带明确「未实现」原因的**
-  :class:`~ego_pod.exit_codes.TrainerError`（退出码 1，需求 9.4），杜绝
-  「探测可用 → 调用静默产出无效/空适配器」的隐患。
-
-  实现影响（需求 8.1 + 9.4 的共同结果）：在已安装 ``mlx`` extra 的 Apple
-  Silicon 机器上，按探测优先级 MLX（第 3）先于 PEFT-CPU（第 4）被选中，从而
-  以退出码 1 失败。欲在 Apple Silicon 上用 PEFT-CPU 训练，请安装 ``peft``
-  extra 但**不**安装 ``mlx`` extra（直至 MLX 真实训练落地）。
+  ``torch`` / ``peft`` 不兼容，需独立的 SFT/LoRA 实现，超出本次特性范围。因此：
+  1. ``MlxBackend.REAL_TRAINING_IMPLEMENTED`` 显式置为 ``False``，使自动探测
+     ``is_available()`` 在真实训练落地前返回 ``False``，从而在同时安装了
+     ``mlx``（或 ``all``）与 ``peft`` extras 的 Apple Silicon 设备上自动跳过
+     未实现的 MLX、平滑回退至 ``PeftCpuBackend``（而无需改变 ``detect`` 固定
+     优先级顺序）；
+  2. 若调用方直接实例化 ``MlxBackend`` 调用三个训练方法（``load_base_model`` /
+     ``train`` / ``export_lora_safetensors``），仍**显式抛出携带明确「未实现」
+     原因的** :class:`~ego_pod.exit_codes.TrainerError`（退出码 1，需求 9.4），
+     杜绝静默产出无效/空适配器的隐患。
 """
 
 from __future__ import annotations
@@ -80,19 +79,25 @@ class MlxBackend:
     hardware: Hardware = "Apple Silicon"
     #: 稳定区分本后端的 Backend_Identifier（需求 7.1、7.4、9.5）。
     identifier: BackendIdentifier = "mlx"
+    #: 真实 SFT/LoRA 训练落地门控：未实现前置为 False，防止自动探测误选导致崩溃。
+    REAL_TRAINING_IMPLEMENTED: bool = False
 
     #: 显式「未实现」原因，三个训练方法共用，确保失败响亮且给出可行替代方案。
     _NOT_IMPLEMENTED_MSG = (
         "Apple MLX 后端的真实 QLoRA 训练在本特性范围内暂未落地"
         "（mlx 张量栈与 torch/peft 不兼容，需独立实现）；"
-        "请在 Apple Silicon 上改用 PEFT-CPU（安装 peft extra、不安装 mlx extra）。"
+        "请在 Apple Silicon 上使用 PEFT-CPU 后端。"
     )
 
     @classmethod
     def is_available(cls) -> bool:
-        """``mlx_lm`` 可导入且运行于 Apple Silicon（macOS + arm64）。"""
+        """仅当真实训练已实现、``mlx_lm`` 可导入且运行于 Apple Silicon 时返回 True。"""
 
-        return _mlx_importable() and _is_apple_silicon()
+        return (
+            cls.REAL_TRAINING_IMPLEMENTED
+            and _mlx_importable()
+            and _is_apple_silicon()
+        )
 
     def load_base_model(self, model_id: str, quantization: str) -> Any:
         """加载 Base_Model 并应用量化（本特性范围内未实现）。

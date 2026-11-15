@@ -267,3 +267,50 @@ def test_apple_silicon_detection_false_on_linux(monkeypatch):
 def test_cuda_is_available_returns_bool():
     # 不依赖具体硬件，仅验证返回布尔值且不抛异常。
     assert isinstance(detect.cuda_is_available(), bool)
+
+
+# ---------------------------------------------------------------------------
+# 未落地 MLX 后端的探测门控保护（防止 Apple Silicon 安装 mlx/all extra 后崩溃）
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_is_available_returns_false_while_real_training_unimplemented(
+    monkeypatch,
+):
+    """即使 mlx_lm 可导入且位于 Apple Silicon，未落地真实训练前 is_available 仍为 False。"""
+    from ego_pod.trainer import mlx_backend
+
+    monkeypatch.setattr(mlx_backend, "_mlx_importable", lambda: True)
+    monkeypatch.setattr(mlx_backend, "_is_apple_silicon", lambda: True)
+
+    assert MlxBackend.REAL_TRAINING_IMPLEMENTED is False
+    assert MlxBackend.is_available() is False
+
+    # 当未来真实训练落地将门控开关置为 True 时，同一硬件与依赖条件下即恢复为 True
+    monkeypatch.setattr(MlxBackend, "REAL_TRAINING_IMPLEMENTED", True)
+    assert MlxBackend.is_available() is True
+
+
+def test_apple_silicon_with_mlx_and_peft_installed_falls_through_to_peft_cpu(
+    monkeypatch,
+):
+    """Apple Silicon 同时安装 mlx 与 peft 时，真实 MlxBackend 被门控跳过并选中 PeftCpuBackend。"""
+    from ego_pod.trainer import mlx_backend
+
+    monkeypatch.setattr(mlx_backend, "_mlx_importable", lambda: True)
+    monkeypatch.setattr(mlx_backend, "_is_apple_silicon", lambda: True)
+    monkeypatch.setattr(
+        UnslothBackend, "is_available", classmethod(lambda cls: False)
+    )
+    monkeypatch.setattr(
+        PeftCudaBackend, "is_available", classmethod(lambda cls: False)
+    )
+    # 刻意不覆盖 MlxBackend.is_available，验证真实门控生效
+    monkeypatch.setattr(
+        PeftCpuBackend, "is_available", classmethod(lambda cls: True)
+    )
+
+    backend = detect.detect_backend()
+
+    assert isinstance(backend, PeftCpuBackend)
+    assert backend.identifier == "peft-cpu"
