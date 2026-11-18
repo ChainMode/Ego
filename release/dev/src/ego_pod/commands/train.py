@@ -327,6 +327,9 @@ def _run_pipeline(
         include_integrity=True,
         max_history=max_history,
     )
+    fidelity_report = _measure_and_record_cell_consistency(
+        cwd, compilation.corpus_path, fidelity_report
+    )
     stage_event(Stage.VAULT, Event.END)
     vault_ms = int((time.monotonic() - t3) * 1000)
     print_summary(f"[dojo progress] 100% VAULT completed ({vault_ms}ms)")
@@ -345,6 +348,32 @@ def _run_pipeline(
         f"elapsed_ms={{collector:{collector_ms},compiler:{compiler_ms},trainer:{trainer_ms},vault:{vault_ms}}}"
     )
     return EXIT_OK
+
+
+def _measure_and_record_cell_consistency(
+    cwd: Path, corpus_path: Path, fidelity_report: dict
+) -> dict:
+    """Measure post-training ``cell_consistency_score`` and re-sign the manifest with it.
+
+    Returns the (possibly updated) fidelity report. When the score cannot be
+    measured honestly (stub backend, no zone Cells, no holdout prompts) the report
+    is left unchanged and the reason is logged.
+    """
+
+    from ego_pod.fidelity.consistency_probe import measure_package_cell_consistency
+    from ego_pod.vault.package import refresh_manifest_fidelity
+
+    out_root = cwd / OUTPUT_DIRNAME
+    score, reason = measure_package_cell_consistency(out_root, corpus_path, cwd=cwd)
+    if score is None:
+        print_summary(f"[fidelity] cell_consistency_score not measured ({reason})")
+        return fidelity_report
+
+    updated = dict(fidelity_report)
+    updated["cell_consistency_score"] = round(float(score), 6)
+    refresh_manifest_fidelity(out_root, updated)
+    print_summary(f"[fidelity] cell_consistency_score={score:.4f} ({reason})")
+    return updated
 
 
 def _build_cell_specs(compilation: Any) -> list[CellSpec]:

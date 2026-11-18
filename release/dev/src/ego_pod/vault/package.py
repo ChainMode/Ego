@@ -64,6 +64,7 @@ __all__ = [
     "build_manifest",
     "write_package",
     "write_grid_package",
+    "refresh_manifest_fidelity",
     "write_multi_edition_package",
 ]
 
@@ -404,6 +405,57 @@ def _finalize_manifest_in_staging(
     if seed is not None and fay_id is not None:
         updated = sign_manifest(updated, signer_fay_id=fay_id, master_seed=seed)
     return updated
+
+
+def refresh_manifest_fidelity(
+    output_root: str | Path,
+    fidelity_report: dict,
+    *,
+    signing_seed_hex: str | None = None,
+    signer_fay_id: str | None = None,
+) -> Path:
+    """Replace ``fidelity_report`` in an already-written ``manifest.json`` and re-sign it.
+
+    Used after post-training measurements (e.g. ``cell_consistency_score``) that
+    need the finished package. Cell files and ``integrity.cell_digests`` are left
+    untouched; only the manifest changes, so the Tier 2 signature is recomputed
+    with the same signing config (explicit args, else ``EGO_SIGNING_SEED_HEX`` /
+    ``EGO_SIGNER_FAY_ID``). Unsigned packages stay unsigned. The write is atomic.
+    """
+
+    from ego_pod.fidelity.metrics import validate_fidelity_report
+    from ego_pod.vault.signing import sign_manifest
+
+    validate_fidelity_report(fidelity_report)
+    root = Path(output_root)
+    manifest_path = root / MANIFEST_FILENAME
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise VaultError(f"读取 manifest.json 失败：{manifest_path}；{exc}") from exc
+
+    was_signed = isinstance(manifest.get("signature"), dict)
+    updated = {k: v for k, v in manifest.items() if k != "signature"}
+    updated["fidelity_report"] = dict(fidelity_report)
+
+    if was_signed:
+        seed, fay_id = _resolve_signing_config(signing_seed_hex, signer_fay_id)
+        if seed is None or fay_id is None:
+            raise VaultError(
+                "包已签名，但重新签名所需的 EGO_SIGNING_SEED_HEX / EGO_SIGNER_FAY_ID 不可用"
+            )
+        updated = sign_manifest(updated, signer_fay_id=fay_id, master_seed=seed)
+
+    tmp_path = manifest_path.with_suffix(".json.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(updated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp_path, manifest_path)
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise VaultError(f"写入 manifest.json 失败：{manifest_path}；{exc}") from exc
+    return manifest_path
 
 
 # ---------------------------------------------------------------------------

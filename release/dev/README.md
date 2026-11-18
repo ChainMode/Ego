@@ -75,7 +75,8 @@ ego vault purge --all
 ## 深层二维稀疏网格（Sparse_Grid）与供应链签名
 
 - **无泄漏专精度分层（`L1..L3`）**：Compiler 在切分确定性留出验证集之后，**仅在训练子集上**拟合各功能分区词表 IDF 与分位数切点，结合结构/代码/推理特征将分区样本分层为连续无跳号的 `1..K`（`K <= max_level`）。
-- **两级完整性与签名**：`manifest.json` 内置 Tier 1 `integrity.cell_digests`（覆盖所有已构建 Edition 的 `.safetensors` 适配器 SHA-256）；配置 `EGO_SIGNING_SEED_HEX` 与 `EGO_SIGNER_FAY_ID` 时，自动生成与 `FayGer` 装载协议逐字节对齐的 Tier 2 RFC 8785 JCS + Ed25519 签名（域 `ifay.ego.package-signing.v1`）。
+- **两级完整性与签名**：`manifest.json` 内置 Tier 1 `integrity.cell_digests`（覆盖所有已构建 Edition 的 `.safetensors` 适配器 SHA-256）；配置 `EGO_SIGNING_SEED_HEX` 与 `EGO_SIGNER_FAY_ID` 时，自动生成与 `FayGer` 装载协议逐字节对齐的 Tier 2 RFC 8785 JCS + Ed25519 签名（域 `ifay.ego.package-signing.v1`）。`EGO_SIGNER_FAY_ID` 必须为规范 iFay FayID（`ifay_` + 至少 16 位小写 base32 `[a-z2-7]`），否则签名阶段即报错。
+- **跨 Cell 一致性评分**：训练完成后，`ego train` 在本地留出集提示上比较每个 Edition 的 Kernel-only 与全量加载回复，取各 Edition 最小值写入 `fidelity_report.cell_consistency_score` 并重新签名（`FayGer` 生产准入要求 `>= 0.70`）。Stub 后端产物不评分（保持 `null`），因为占位回复不代表模型行为。
 - **本地保真度报告**：自动生成纯聚合标量的 `fidelity_report`（留出集损失、困惑度、跨 Cell 一致性与版本间漂移），零原始语料入包。
 
 ## 真实训练后端安装（Optional Extras）

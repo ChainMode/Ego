@@ -147,7 +147,7 @@ def test_sign_manifest_exact_formula_and_verify_roundtrip(tmp_path: Path) -> Non
         version="0.1.0",
         created_at="2026-11-15T10:00:00Z",
         signing_seed_hex=_seed_hex_a(),
-        signer_fay_id="ifay_alice_01",
+        signer_fay_id="ifay_aliceprimeaaaaaaaa",
         stdout=io.StringIO(),
     )
 
@@ -159,8 +159,8 @@ def test_sign_manifest_exact_formula_and_verify_roundtrip(tmp_path: Path) -> Non
     assert sig["schema_version"] == SIGNING_SCHEMA_VERSION == "1.0"
     assert sig["alg"] == SIGNING_ALG == "Ed25519"
     assert sig["domain"] == SIGNING_DOMAIN == "ifay.ego.package-signing.v1"
-    assert sig["signer_fay_id"] == "ifay_alice_01"
-    assert sig["key_id"] == "ifay_alice_01#ego-sign-1"
+    assert sig["signer_fay_id"] == "ifay_aliceprimeaaaaaaaa"
+    assert sig["key_id"] == "ifay_aliceprimeaaaaaaaa#ego-sign-1"
     assert len(sig["public_key_hex"]) == 64
     assert len(sig["sig_hex"]) == 128
 
@@ -179,7 +179,7 @@ def test_sign_manifest_exact_formula_and_verify_roundtrip(tmp_path: Path) -> Non
     )
     assert isinstance(res, SignatureVerificationResult)
     assert res.status == "verified"
-    assert res.signer_fay_id == "ifay_alice_01"
+    assert res.signer_fay_id == "ifay_aliceprimeaaaaaaaa"
     assert res.verified_cells == ("normal/adapters/ego-lora.safetensors",)
 
 
@@ -197,14 +197,14 @@ def test_sign_manifest_accepts_direct_32_byte_subkey(tmp_path: Path) -> None:
     }
     direct_subkey = derive_ego_signing_subkey(_seed_hex_b())
     signed = sign_manifest(
-        manifest, signer_fay_id="ifay_direct_sub", subkey=direct_subkey
+        manifest, signer_fay_id="ifay_directsubkeyaaaaaa", subkey=direct_subkey
     )
     (pkg / "manifest.json").write_text(
         json.dumps(signed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     res = verify_package_signature(pkg)
     assert res.status == "verified"
-    assert res.signer_fay_id == "ifay_direct_sub"
+    assert res.signer_fay_id == "ifay_directsubkeyaaaaaa"
 
 
 def test_unsigned_package_returns_unsigned_unless_trusted_pubkey_required(
@@ -243,7 +243,7 @@ def test_tampered_manifest_or_safetensors_or_wrong_pubkey_rejected(
         training_backend="stub",
         output_root=pkg_root,
         signing_seed_hex=_seed_hex_a(),
-        signer_fay_id="ifay_bob_02",
+        signer_fay_id="ifay_bobprimebbbbbbbbbb",
         stdout=io.StringIO(),
     )
 
@@ -293,7 +293,7 @@ def test_sparse_grid_on_demand_single_cell_subset_verification(
 ) -> None:
     """Sparse Grid 按需加载：只校验选中的 Kernel + coding/L1，无需未选中的 knowledge/L1 在盘。"""
     monkeypatch.setenv("EGO_SIGNING_SEED_HEX", _seed_hex_a())
-    monkeypatch.setenv("EGO_SIGNER_FAY_ID", "ifay_grid_signer")
+    monkeypatch.setenv("EGO_SIGNER_FAY_ID", "ifay_gridsignerkeyaaaa")
 
     src_k = _make_safetensors(tmp_path / "k.safetensors", 1.0)
     src_c = _make_safetensors(tmp_path / "c.safetensors", 2.0)
@@ -434,7 +434,7 @@ def test_end_to_end_ego_train_writes_fidelity_integrity_and_verifiable_signature
 
     monkeypatch.chdir(ws)
     monkeypatch.setenv("EGO_SIGNING_SEED_HEX", _seed_hex_a())
-    monkeypatch.setenv("EGO_SIGNER_FAY_ID", "ifay_e2e_prime_01")
+    monkeypatch.setenv("EGO_SIGNER_FAY_ID", "ifay_eteprimeaaaaaaaaaa")
     monkeypatch.setattr("ego_pod.trainer.detect.detect_backend", lambda: StubBackend())
     monkeypatch.setattr("ego_pod.trainer.grid.detect_backend", lambda: StubBackend())
     monkeypatch.setattr("ego_pod.trainer.pipeline.detect_backend", lambda: StubBackend())
@@ -453,7 +453,7 @@ def test_end_to_end_ego_train_writes_fidelity_integrity_and_verifiable_signature
     assert "integrity" in manifest
     assert len(manifest["integrity"]["cell_digests"]) >= 1
     assert "signature" in manifest
-    assert manifest["signature"]["signer_fay_id"] == "ifay_e2e_prime_01"
+    assert manifest["signature"]["signer_fay_id"] == "ifay_eteprimeaaaaaaaaaa"
 
     ver = verify_package_signature(pkg_root)
     assert ver.status == "verified"

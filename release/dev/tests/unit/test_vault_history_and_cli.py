@@ -37,7 +37,7 @@ def test_ego_vault_list_rollback_and_tamper_rejection(
     monkeypatch.chdir(tmp_path)
     root = tmp_path / "ego-output"
     seed_hex = "22" * 32
-    fay_id = "ifay_ed25519_abcdef0123456789"
+    fay_id = "ifay_edabcdefghijklmnopqr"
     pubkey_hex = _pubkey_hex_from_seed(seed_hex)
 
     # 空目录调用 ego vault list 正常返回 0
@@ -215,7 +215,7 @@ def test_rollback_rejects_wrong_trusted_public_key(tmp_path: Path) -> None:
     """回滚传入不匹配的受信任公钥时拒绝恢复且保持活动包不变。"""
     root = tmp_path / "ego-output"
     seed_hex = "44" * 32
-    fay_id = "ifay_ed25519_4444444444444444"
+    fay_id = "ifay_ed4444444444444444"
 
     for idx, ver in enumerate(("0.1.0", "0.2.0"), start=1):
         write_multi_edition_package(

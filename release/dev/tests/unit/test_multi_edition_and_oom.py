@@ -278,7 +278,7 @@ def test_multi_edition_vault_package_signing_history_and_size_ceiling(
     """多规格同包落盘、Tier 1+2 全包签名验签、覆盖归档到 .history/ 以及体积上限拦截。"""
     root = tmp_path / "ego-output"
     seed_hex = "11" * 32
-    fay_id = "ifay_ed25519_0123456789abcdef"
+    fay_id = "ifay_ed234567abcdefghij"
 
     lite_k = _make_safetensor(tmp_path / "tmp_train" / "lite_k.safetensors")
     lite_c1 = _make_safetensor(tmp_path / "tmp_train" / "lite_c1.safetensors")

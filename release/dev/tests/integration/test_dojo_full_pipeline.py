@@ -72,7 +72,7 @@ def test_dojo_end_to_end_multi_edition_deep_grid_update_and_rollback(
     """全链路验证：init -> 多规格深层网格训练（含并行模式与签名）-> 基座变更检测 -> --update -> vault 回滚 -> run。"""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("EGO_SIGNING_SEED_HEX", "33" * 32)
-    monkeypatch.setenv("EGO_SIGNER_FAY_ID", "ifay_ed25519_feedfacecafebeef")
+    monkeypatch.setenv("EGO_SIGNER_FAY_ID", "ifay_edfeedfacecafebeefaa")
 
     _seed_rich_workspace_data(tmp_path)
 

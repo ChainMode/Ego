@@ -62,6 +62,19 @@ ENV_TRUSTED_PUBKEY_HEX = "EGO_TRUSTED_PUBKEY_HEX"
 _HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
 _HEX_128_RE = re.compile(r"^[0-9a-f]{128}$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+#: Canonical iFay FayID: FayID schema ``^ifay_[a-z2-7]+$`` (lowercase RFC 4648 base32,
+#: no padding), plus the >=16-char body FayGer's loader enforces. Real IDs derived
+#: from 32-byte digests are 52 chars, so both rules agree on them.
+_CANONICAL_IFAY_ID_RE = re.compile(r"^ifay_[a-z2-7]{16,}$")
+
+
+def _require_canonical_ifay_id(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or not _CANONICAL_IFAY_ID_RE.match(value):
+        raise VaultError(
+            f"{label} 不是规范 iFay FayID（须为 'ifay_' + 至少 16 位小写 base32 [a-z2-7]），"
+            f"实际为 {value!r}"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -319,10 +332,7 @@ def sign_manifest(
 ) -> dict[str, Any]:
     """对已含 ``integrity`` 的 ``manifest`` 计算 JCS + Ed25519 签名并返回附带 ``signature`` 的新字典。"""
 
-    if not isinstance(signer_fay_id, str) or not signer_fay_id.startswith("ifay_"):
-        raise VaultError(
-            f"signer_fay_id 必须以 'ifay_' 开头，实际为 {signer_fay_id!r}"
-        )
+    _require_canonical_ifay_id(signer_fay_id, label="signer_fay_id")
     if (master_seed is None) == (subkey is None):
         raise VaultError("sign_manifest 必须且只能提供 master_seed 或 subkey 之一")
 
@@ -416,8 +426,7 @@ def verify_package_signature(
     payload_jcs_sha256 = sig_obj.get("payload_jcs_sha256")
     sig_hex = sig_obj.get("sig_hex")
 
-    if not isinstance(signer_fay_id, str) or not signer_fay_id.startswith("ifay_"):
-        raise VaultError(f"signature.signer_fay_id 非法：{signer_fay_id!r}")
+    _require_canonical_ifay_id(signer_fay_id, label="signature.signer_fay_id")
     if not isinstance(key_id, str) or not key_id:
         raise VaultError("signature.key_id 必须为非空字符串")
     if not isinstance(public_key_hex, str) or not _HEX_64_RE.match(public_key_hex):
