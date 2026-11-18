@@ -1,0 +1,254 @@
+name: Documentation & Link Integrity CI
+
+on:
+  push:
+    branches: [main, production]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-gate:
+    name: Markdown Lint, Link, Terminology & i18n Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run Documentation, Relative Link, Terminology & Multilingual Parity Gate
+        shell: bash
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const path = require("path");
+          const { execFileSync } = require("child_process");
+
+          const repoRoot = process.cwd();
+          const LOCALES = ["zh-CN", "zh-TW", "en", "ja", "ko", "de", "es", "fr", "ru"];
+
+          const trackedAll = execFileSync(
+            "git",
+            ["-c", "core.quotepath=false", "ls-files"],
+            { cwd: repoRoot, encoding: "utf8" }
+          )
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+          const errors = [];
+
+          // 1. Markdown/MDX Structural Lint, Non-Empty Stub Gate & Relative Link Gate
+          const mdFiles = trackedAll.filter(
+            (f) => f.endsWith(".md") || f.endsWith(".mdx")
+          );
+
+          function stripCodeAndCheckStructure(raw, relFile) {
+            const lines = raw.split(/\r?\n/);
+            let inFence = null;
+            const nonCodeLines = [];
+
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              if (!inFence) {
+                const m = line.match(/^ {0,3}(`{3,}|~{3,})/);
+                if (m) {
+                  const ch = m[1][0];
+                  const rest = line.slice(m[0].length);
+                  if (ch === "~" || !rest.includes("`")) {
+                    inFence = { char: ch, len: m[1].length, line: i + 1 };
+                    nonCodeLines.push("");
+                    continue;
+                  }
+                }
+                if (/^(?:<{7}\s|={7}\s*$|>{7}\s)/.test(line)) {
+                  errors.push(`${relFile}:${i + 1} unresolved Git merge conflict marker`);
+                }
+                nonCodeLines.push(line.replace(/(`+)([\s\S]*?)\1/g, ""));
+              } else {
+                const closeRe = new RegExp(`^ {0,3}${inFence.char}{${inFence.len},}\\s*$`);
+                if (closeRe.test(line)) {
+                  inFence = null;
+                }
+                nonCodeLines.push("");
+              }
+            }
+
+            if (inFence) {
+              errors.push(`${relFile}:${inFence.line} unclosed fenced code block`);
+            }
+            return nonCodeLines;
+          }
+
+          // Terminology rules (aligned with iFay ecosystem charter)
+          const negationRe =
+            /(?:不|不可|不能|不得|禁止|非|不是|不会|永远不会|不应|不允许|无权|\b(?:no|not|never|non|cannot|must\s+not|nicht|kein(?:e|er|es|en)?|nie|sans|pas)\b)/i;
+          function isDeprecatedLine(line) {
+            return (
+              line.includes("废弃/禁用写法") ||
+              line.includes("❌") ||
+              /deprecated|forbidden/i.test(line)
+            );
+          }
+          function isNegated(line, start, end) {
+            const before = line.slice(Math.max(0, start - 80), start);
+            const within = line.slice(start, end);
+            return negationRe.test(before) || negationRe.test(within);
+          }
+
+          const termRules = [
+            {
+              id: "ifay.host-person",
+              re: new RegExp("(?:(宿" + "主|Host)\\s*(?:用户|人类|自然人|本人|用户本人|prime|person|human|user)|\\b(?:host_" + "id|host_" + "authorization)\\b)", "gi"),
+              allow: (line) => isDeprecatedLine(line),
+            },
+            {
+              id: "ifay.deprecated-human-prime-term",
+              re: new RegExp("(?:主" + "人(?:用户|人类|自然人|本人)?|\\bHuman\\s+" + "Prototype\\b)", "gi"),
+              allow: (line) => isDeprecatedLine(line),
+            },
+            {
+              id: "ifay.gmchain-wrong-translation",
+              re: new RegExp("全球(?:贡献|功绩)" + "链", "g"),
+              allow: (line) => isDeprecatedLine(line),
+            },
+            {
+              id: "ifay.merit-unit-typo",
+              re: /\bMerit\s+Uni\b(?!t)/g,
+              allow: () => false,
+            },
+            {
+              id: "ifay.meritoken-financialization",
+              re: new RegExp("(?:Token\\s*化价值|Tokenized\\s+value|Token\\s*流转|token\\s+flows|Token\\s*操作|token\\s+operations|数字" + "代币)", "gi"),
+              allow: (line, m) =>
+                isDeprecatedLine(line) || isNegated(line, m.index, m.index + m[0].length),
+            },
+            {
+              id: "ifay.financial-advice-disclaimer",
+              re: new RegExp("(?:非财务" + "建议|\\bNo\\s+financial\\s+advice\\b)", "gi"),
+              allow: (line) => isDeprecatedLine(line),
+            },
+            {
+              id: "ifay.unresolved-contact-placeholder",
+              re: /\[INSERT\s+CONTACT\s+METHOD\]/gi,
+              allow: () => false,
+            },
+          ];
+
+          for (const relFile of mdFiles) {
+            const fullPath = path.join(repoRoot, relFile);
+            if (!fs.existsSync(fullPath)) continue;
+            const raw = fs.readFileSync(fullPath, "utf8");
+
+            if (Buffer.byteLength(raw.trim(), "utf8") < 10) {
+              errors.push(`${relFile}: empty or <10B stub Markdown file`);
+              continue;
+            }
+
+            const nonCodeLines = stripCodeAndCheckStructure(raw, relFile);
+
+            // Relative link & image resolution
+            for (let idx = 0; idx < nonCodeLines.length; idx++) {
+              const line = nonCodeLines[idx];
+              const linkRe = /!?\[[^\]]*\]\(([^)\n]+)\)/g;
+              let m;
+              while ((m = linkRe.exec(line)) !== null) {
+                let target = m[1].trim();
+                if (target.startsWith("<") && target.endsWith(">")) {
+                  target = target.slice(1, -1).trim();
+                } else {
+                  target = target.split(/\s+/)[0];
+                }
+                if (
+                  !target ||
+                  target.startsWith("#") ||
+                  /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)
+                ) {
+                  continue;
+                }
+                let cleanRel = target.split("#")[0].split("?")[0];
+                try {
+                  cleanRel = decodeURIComponent(cleanRel);
+                } catch {
+                  // keep raw if malformed percent sequence
+                }
+                if (!cleanRel) continue;
+
+                const resolved = cleanRel.startsWith("/")
+                  ? path.join(repoRoot, cleanRel)
+                  : path.resolve(path.dirname(fullPath), cleanRel);
+
+                const candidates = [
+                  resolved,
+                  `${resolved}.md`,
+                  `${resolved}.mdx`,
+                  path.join(resolved, "README.md"),
+                  path.join(resolved, "index.md"),
+                ];
+                if (!candidates.some((c) => fs.existsSync(c))) {
+                  errors.push(
+                    `${relFile}:${idx + 1} broken relative link '${target}'`
+                  );
+                }
+              }
+            }
+
+            // Terminology scan across all lines
+            const allLines = raw.split(/\r?\n/);
+            for (let idx = 0; idx < allLines.length; idx++) {
+              const lineText = allLines[idx];
+              for (const rule of termRules) {
+                rule.re.lastIndex = 0;
+                let tm;
+                while ((tm = rule.re.exec(lineText)) !== null) {
+                  if (rule.allow(lineText, tm)) continue;
+                  errors.push(
+                    `${relFile}:${idx + 1} [${rule.id}] forbidden term '${tm[0]}'`
+                  );
+                }
+              }
+            }
+          }
+
+          // 2. Multilingual Baseline Parity Gate
+          const docsDir = path.join(repoRoot, "docs");
+          if (fs.existsSync(docsDir)) {
+            const blueprintLocales = LOCALES.filter((loc) =>
+              fs.existsSync(path.join(docsDir, loc, "blueprint"))
+            );
+            if (blueprintLocales.length > 0) {
+              for (const requiredPrimary of ["zh-CN", "en"]) {
+                if (!blueprintLocales.includes(requiredPrimary)) {
+                  errors.push(
+                    `docs/: missing required primary blueprint locale '${requiredPrimary}'`
+                  );
+                }
+              }
+            }
+            const startLocales = LOCALES.filter((loc) =>
+              fs.existsSync(path.join(docsDir, loc, "start.md"))
+            );
+            if (startLocales.length > 0 && startLocales.length !== LOCALES.length) {
+              errors.push(
+                `docs/<locale>/start.md parity mismatch: present in [${startLocales.join(", ")}], expected all 9 locales`
+              );
+            }
+          }
+
+          if (errors.length > 0) {
+            console.error(`Docs CI failed with ${errors.length} error(s):`);
+            for (const err of errors) {
+              console.error(`  - ${err}`);
+            }
+            process.exit(1);
+          }
+
+          console.log(
+            `Docs CI passed: verified ${mdFiles.length} tracked Markdown file(s) with 0 broken links and 0 terminology violations.`
+          );
+          EOF
