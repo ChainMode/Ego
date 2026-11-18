@@ -14,8 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-#: 受控基座模型白名单（ADR 0006 §2）：覆盖 Qwen 3.5、Gemma 4 与 Phi-4 三大家族。
+#: 受控基座模型白名单（ADR 0006 §2）：覆盖 Qwen 2.5/3.5、Gemma 4 与 Phi-4 家族。
 SUPPORTED_BASE_MODELS: tuple[str, ...] = (
+    "qwen2.5-0.5B",
     "qwen3.5-0.8B",
     "qwen3.5-2B",
     "qwen3.5-4B",

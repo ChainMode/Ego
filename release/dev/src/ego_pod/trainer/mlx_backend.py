@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any, Iterator
 
+from ego_pod.config.base_models import resolve_hf_repo_id
 from ego_pod.config.schema import TrainingParams
 from ego_pod.exit_codes import EgoError, TrainerError
 from ego_pod.logging_io import print_summary
@@ -324,8 +325,9 @@ class MlxBackend:
                 f"不支持的量化精度 {quantization!r}"
             )
         try:
+            resolved_id = resolve_hf_repo_id(model_id)
             _mx, _nn, _optim, mlx_lm = _load_mlx_stack()
-            loaded = mlx_lm.load(model_id)
+            loaded = mlx_lm.load(resolved_id)
             if isinstance(loaded, tuple) and len(loaded) >= 2:
                 model_obj, tokenizer = loaded[0], loaded[1]
             else:
@@ -340,8 +342,9 @@ class MlxBackend:
             ) from exc
 
         quant_desc = quantization if quantization else "none"
+        repo_part = f"hf_repo={resolved_id} " if resolved_id != model_id else ""
         print_summary(
-            f"Loaded base model: model_id={model_id} "
+            f"Loaded base model: model_id={model_id} {repo_part}"
             f"device=Apple Silicon quantization={quant_desc}"
         )
         return model_obj, tokenizer

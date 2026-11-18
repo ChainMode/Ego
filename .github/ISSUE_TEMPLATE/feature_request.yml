@@ -1,0 +1,34 @@
+name: Feature Request
+description: Propose an enhancement for Ego Pod, training backends, data collectors, or schemas
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggest an improvement to **Ego** while preserving local-first privacy, zero raw-sample leakage, and deterministic package verification.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case
+      description: What workflow or capability gap does this solve for a Human Prime cultivating an Ego pod?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the CLI UX, configuration schema, or backend/collector interface you envision.
+    validations:
+      required: true
+
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy & Offline Impact
+      description: Does this feature touch network I/O, credentials, or exported `.egopod` / `ego-output/` metadata?
+      placeholder: "Operates 100% offline; no raw personal text enters manifest.json or fidelity_report."
+    validations:
+      required: false

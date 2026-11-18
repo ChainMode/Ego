@@ -208,13 +208,28 @@ def _base_model_available(
 
 
 def _hf_cache_contains(model_id: str) -> bool:
-    """尽力检查本地 HuggingFace 缓存目录中是否已存在目标基座权重。
+    """尽力检查本地目录或本地 HuggingFace 缓存目录中是否已存在目标基座权重。
 
     通过 ``huggingface_hub.scan_cache_dir`` 扫描默认缓存目录（通常为
-    ``~/.cache/huggingface/hub/``）。``huggingface_hub`` 缺失或扫描过程中发生
-    任何异常时一律保守返回 ``False``（视为不可用），以便离线模式下据此触发
-    R9-AC7。本函数不发起任何网络请求。
+    ``~/.cache/huggingface/hub/``），并先行经 :func:`resolve_hf_repo_id`
+    把友好基座名（如 ``qwen2.5-0.5B``、``gemma4-2B``）翻译为真实 Hub 仓库 ID。
+    ``huggingface_hub`` 缺失或扫描过程中发生任何异常时一律保守返回 ``False``
+    （视为不可用），以便离线模式下据此触发 R9-AC7。本函数不发起任何网络请求。
     """
+
+    import os  # noqa: PLC0415
+
+    from ego_pod.config.base_models import (  # noqa: PLC0415
+        BaseModelResolutionError,
+        resolve_hf_repo_id,
+    )
+
+    if isinstance(model_id, str) and os.path.isdir(model_id):
+        return True
+    try:
+        resolved_id = resolve_hf_repo_id(model_id)
+    except BaseModelResolutionError:
+        return False
 
     try:
         from huggingface_hub import scan_cache_dir
@@ -225,9 +240,11 @@ def _hf_cache_contains(model_id: str) -> bool:
     except Exception:
         # 缓存目录不存在/无权限/格式异常等：保守视为不可用。
         return False
-    needle = model_id.lower()
+    resolved_lower = resolved_id.lower()
+    raw_lower = model_id.lower()
     for repo in cache_info.repos:
-        if needle in repo.repo_id.lower():
+        repo_lower = repo.repo_id.lower()
+        if resolved_lower == repo_lower or raw_lower in repo_lower:
             return True
     return False
 

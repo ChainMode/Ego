@@ -1,0 +1,53 @@
+name: Bug Report
+description: Report a reproducible bug in ego-pod (CLI, Collector, Compiler, Trainer, Runtime, or Vault)
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue in **Ego** (`ego-pod`)!
+        **Privacy & Security Notice:** Never include real personal notes, chat logs, signing seeds, or API keys. For security or privacy vulnerabilities, report privately via [SECURITY.md](https://github.com/ChainMode/Ego/blob/main/SECURITY.md).
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      options:
+        - CLI (`ego init / train / run / vault`)
+        - Collector (`local / url / s3 / oss / plugin`)
+        - Compiler & Sparse Grid Routing (`L1..L3`)
+        - Trainer (`peft / mlx / unsloth / stub`)
+        - Runtime & Multi-Cell Inference (`Coexist_Activate`)
+        - Vault & Package Signing (`JCS + Ed25519`)
+        - Documentation / Schemas
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Bug Summary & Minimal Reproduction
+      description: Provide synthetic steps or commands to reproduce the issue.
+      placeholder: |
+        1. Run `ego init`
+        2. Run `ego train` with synthetic sample data
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. Actual Behavior
+      placeholder: Describe what you expected to happen and the actual output/exit code.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment (OS, Python, Backend, Hardware)
+      placeholder: "macOS 15 arm64 (Apple Silicon), Python 3.12, ego-pod 0.2.0, peft-cpu / mlx"
+    validations:
+      required: true

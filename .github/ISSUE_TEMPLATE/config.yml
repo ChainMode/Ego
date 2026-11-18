@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private Security & Privacy Vulnerability Disclosure
+    url: https://github.com/ChainMode/Ego/security/advisories/new
+    about: Report PII scrubbing bypasses, signature verification issues, or deserialization bugs privately (do not open a public issue).
+  - name: iFay Ecosystem Portal
+    url: https://ifay.ai
+    about: Learn how Ego personal pods integrate with FayGer and the broader iFay ecosystem.

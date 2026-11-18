@@ -41,6 +41,23 @@ jobs:
             .map((s) => s.trim())
             .filter(Boolean);
 
+          // Resolve relative links strictly against tracked git files/directories
+          // so gitignored local files can never mask broken links in a clean clone.
+          const trackedSet = new Set(trackedAll);
+          const trackedDirs = new Set();
+          for (const f of trackedAll) {
+            const parts = f.split("/");
+            for (let i = 1; i < parts.length; i++) {
+              trackedDirs.add(parts.slice(0, i).join("/"));
+            }
+          }
+          function existsInClone(absPath) {
+            const rel = path.relative(repoRoot, absPath).split(path.sep).join("/");
+            if (!rel) return trackedAll.length > 0;
+            if (rel.startsWith("..")) return false;
+            return trackedSet.has(rel) || trackedDirs.has(rel);
+          }
+
           const errors = [];
 
           // 1. Markdown/MDX Structural Lint, Non-Empty Stub Gate & Relative Link Gate
@@ -190,7 +207,7 @@ jobs:
                   path.join(resolved, "README.md"),
                   path.join(resolved, "index.md"),
                 ];
-                if (!candidates.some((c) => fs.existsSync(c))) {
+                if (!candidates.some((c) => existsInClone(c))) {
                   errors.push(
                     `${relFile}:${idx + 1} broken relative link '${target}'`
                   );

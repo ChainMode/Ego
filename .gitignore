@@ -16,14 +16,28 @@
 !/.github/workflows/
 /.github/workflows/*
 !/.github/workflows/docs-ci.yml
+!/.github/ISSUE_TEMPLATE/
+/.github/ISSUE_TEMPLATE/*
+!/.github/ISSUE_TEMPLATE/bug_report.yml
+!/.github/ISSUE_TEMPLATE/feature_request.yml
+!/.github/ISSUE_TEMPLATE/config.yml
+!/.github/pull_request_template.md
 !/release/
 /release/*
 !/release/dev/
 /release/dev/*
 !/release/dev/pyproject.toml
 !/release/dev/README.md
+!/release/dev/PUBLISHING.md
+!/release/dev/REAL_TRAINING.md
 !/release/dev/src/
 !/release/dev/tests/
+!/release/hf/
+/release/hf/*
+!/release/hf/README.md
+!/release/hf/MODEL_CARD.md
+!/release/hf/requirements.txt
+!/release/hf/app.py
 
 # === Exclude build/cache/OS noise inside allowed directories ===
 .DS_Store

@@ -33,6 +33,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ego_pod.config.base_models import resolve_hf_repo_id
 from ego_pod.config.schema import TrainingParams
 from ego_pod.exit_codes import EgoError, TrainerError
 from ego_pod.logging_io import print_summary
@@ -43,6 +44,7 @@ from ego_pod.trainer.base import BackendIdentifier, Hardware, ProgressCallback
 __all__ = [
     "PeftCpuBackend",
     "PeftCudaBackend",
+    "resolve_lora_target_modules",
 ]
 
 
@@ -193,6 +195,54 @@ def _resolve_device(model_obj: Any) -> Any:
     return getattr(first, "device", None)
 
 
+def resolve_lora_target_modules(model_obj: Any) -> list[str] | str | None:
+    """当 PEFT 内置映射尚未收录某新架构（如 ``qwen3_5_text`` / ``gemma4_text``）时推断线性投影层名。
+
+    若模型已在 ``TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING`` 中或为无 ``config.model_type``
+    的测试替身，返回 ``None`` 以保持既有默认推断行为 100% 不变。
+    """
+
+    cfg = getattr(model_obj, "config", None)
+    model_type = getattr(cfg, "model_type", None) if cfg is not None else None
+    if not isinstance(model_type, str) or not model_type:
+        return None
+    try:
+        import torch  # noqa: PLC0415
+        from peft.utils import (  # noqa: PLC0415
+            TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING,
+        )
+    except Exception:
+        return None
+    if model_type in TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING:
+        return None
+    named_modules = getattr(model_obj, "named_modules", None)
+    if not callable(named_modules):
+        return None
+    linear_leaves = {
+        name.rsplit(".", 1)[-1]
+        for name, mod in named_modules()
+        if isinstance(mod, torch.nn.Linear) and name
+    }
+    if {"q_proj", "v_proj"} <= linear_leaves:
+        return ["q_proj", "v_proj"]
+    attn_candidates = [
+        m
+        for m in (
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "qkv_proj",
+            "in_proj_qkv",
+            "c_attn",
+        )
+        if m in linear_leaves
+    ]
+    if attn_candidates:
+        return attn_candidates
+    return "all-linear" if linear_leaves else None
+
+
 # --- 共享实现 ---------------------------------------------------------------
 
 
@@ -262,6 +312,7 @@ class _PeftBackendBase:
         use_4bit = use_cuda and _bitsandbytes_available()
 
         try:
+            resolved_id = resolve_hf_repo_id(model_id)
             # 惰性导入：保证模块顶层 import 永不因缺依赖而失败（R8-AC4）。
             import torch  # noqa: PLC0415
             from transformers import (  # noqa: PLC0415
@@ -269,7 +320,7 @@ class _PeftBackendBase:
                 AutoTokenizer,
             )
 
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            tokenizer = AutoTokenizer.from_pretrained(resolved_id)
 
             if use_4bit:
                 from transformers import BitsAndBytesConfig  # noqa: PLC0415
@@ -287,7 +338,7 @@ class _PeftBackendBase:
                     bnb_4bit_compute_dtype=compute_dtype,
                 )
                 model = AutoModelForCausalLM.from_pretrained(
-                    model_id,
+                    resolved_id,
                     quantization_config=bnb_config,
                     device_map={"": 0},
                 )
@@ -298,7 +349,7 @@ class _PeftBackendBase:
                 # CPU / 无 bnb 精度回退：优先 bf16（若支持），否则 fp32（R1-AC2、R1-AC3）。
                 load_dtype = torch.bfloat16 if _cpu_bf16_supported() else torch.float32
                 model = AutoModelForCausalLM.from_pretrained(
-                    model_id,
+                    resolved_id,
                     torch_dtype=load_dtype,
                 )
                 if use_cuda:
@@ -317,8 +368,9 @@ class _PeftBackendBase:
             ) from exc
 
         # 加载摘要：model_id / 设备 / 实际量化或精度（R1-AC4）。
+        repo_part = f"hf_repo={resolved_id} " if resolved_id != model_id else ""
         print_summary(
-            f"Loaded base model: model_id={model_id} "
+            f"Loaded base model: model_id={model_id} {repo_part}"
             f"device={device_desc} quantization={quant_desc}"
         )
         return model, tokenizer
@@ -370,12 +422,16 @@ class _PeftBackendBase:
                     get_peft_model,
                 )
 
-                lora_config = LoraConfig(
-                    r=params.lora_rank,
-                    lora_alpha=params.lora_alpha,
-                    bias="none",
-                    task_type="CAUSAL_LM",
-                )
+                target_modules = resolve_lora_target_modules(model_obj)
+                lora_kwargs: dict[str, Any] = {
+                    "r": params.lora_rank,
+                    "lora_alpha": params.lora_alpha,
+                    "bias": "none",
+                    "task_type": "CAUSAL_LM",
+                }
+                if target_modules is not None:
+                    lora_kwargs["target_modules"] = target_modules
+                lora_config = LoraConfig(**lora_kwargs)
                 model_obj = get_peft_model(model_obj, lora_config)
         except EgoError:
             # 已构造的 TrainerError 等原样透传，保持退出码语义不被二次包装。

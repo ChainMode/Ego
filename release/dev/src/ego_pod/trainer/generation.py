@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -186,6 +187,8 @@ def generate_reply(
         add_generation_prompt=True,
         return_tensors="pt",
     )
+    if isinstance(input_ids, Mapping) and "input_ids" in input_ids:
+        input_ids = input_ids["input_ids"]
 
     # 将输入张量迁移到模型设备（真实张量路径）；假实现或无 device 时跳过。
     device = getattr(model, "device", None)

@@ -57,11 +57,16 @@ ego vault purge --all
 
 此外可在 `editions:` 下声明满足 `^[a-z0-9][a-z0-9-]{0,31}$` 的自定义规格，并覆盖 `base`、`lora_rank`、`lora_alpha`、`max_level`、`max_size_mb` 与 `zones` 子集。
 
-### 受控基座模型白名单
+### 受控基座模型白名单与 Hugging Face 真实权重映射
 
-- **Qwen 3.5**：`qwen3.5-0.8B`, `qwen3.5-2B`, `qwen3.5-4B`, `qwen3.5-9B`, `qwen3.5-27B`
-- **Gemma 4**：`gemma4-2B`, `gemma4-9B`, `gemma4-27B`
-- **Phi-4**：`phi4-mini`, `phi4-14B`
+真实训练后端（`peft-*` / `mlx` / `unsloth`）通过 `ego_pod.config.base_models.resolve_hf_repo_id` 自动将友好名称映射为已验证、免门禁（`gated: false`）的 Hugging Face 仓库 ID（同时支持直接填写 `org/repo` 或本地模型目录路径）：
+
+- **Qwen 2.5（轻量极速首选）**：`qwen2.5-0.5B`（`Qwen/Qwen2.5-0.5B-Instruct`，约 `0.99 GB`，CPU / Apple Silicon 实测最快）
+- **Qwen 3.5**：`qwen3.5-0.8B`（`Qwen/Qwen3.5-0.8B`）, `qwen3.5-2B`（`Qwen/Qwen3.5-2B`）, `qwen3.5-4B`（`Qwen/Qwen3.5-4B`）, `qwen3.5-9B`（`Qwen/Qwen3.5-9B`）, `qwen3.5-27B`（`Qwen/Qwen3.5-27B`）
+- **Gemma 4**：`gemma4-2B`（`google/gemma-4-E2B-it`）；`gemma4-9B` / `gemma4-27B` 仅保留配置与 Stub 兼容（Hub 无对应参数量切片，真实后端会快速报错并列出可用基座）
+- **Phi-4**：`phi4-mini`（`microsoft/Phi-4-mini-instruct`）, `phi4-14B`（`microsoft/phi-4`）
+
+完整 Apple Silicon 端到端非 Stub 真实微调步骤与实测指标日志见 **[REAL_TRAINING.md](./REAL_TRAINING.md)**；PyPI 构建与 Trusted Publisher 发布流程见 **[PUBLISHING.md](./PUBLISHING.md)**。
 
 训练期间若遭遇显存或内存不足（OOM），编排层会自动将 `batch_size` 减半重试（最多 3 次），并在产物配置中记录 `effective_batch_size` 与 `oom_retries`。
 

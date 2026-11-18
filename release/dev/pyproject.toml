@@ -4,12 +4,40 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ego-pod"
-description = "Ego Pod v0.2 — 本地隐私优先的多规格深层稀疏网格个性化 AI 模型修炼管线"
+description = "Local-first, privacy-preserving personal AI pod cultivation pipeline (multi-edition Sparse-Grid LoRA + JCS Ed25519 signing)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "ChainMode contributors" }]
-keywords = ["ego", "qlora", "lora", "fine-tuning", "privacy", "qwen"]
+authors = [{ name = "ChainMode Contributors", email = "jah.g@ifay.ai" }]
+keywords = [
+    "ego",
+    "egopod",
+    "ifay",
+    "qlora",
+    "lora",
+    "fine-tuning",
+    "privacy",
+    "local-first",
+    "peft",
+    "mlx",
+    "qwen",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security :: Cryptography",
+]
 dynamic = ["version"]
 dependencies = [
     "pyyaml>=6.0",
@@ -19,6 +47,13 @@ dependencies = [
     "huggingface_hub>=0.20",
     "cryptography>=41.0",
 ]
+
+[project.urls]
+Homepage = "https://ifay.ai"
+Repository = "https://github.com/ChainMode/Ego"
+Documentation = "https://github.com/ChainMode/Ego/tree/main/docs"
+Issues = "https://github.com/ChainMode/Ego/issues"
+Security = "https://github.com/ChainMode/Ego/blob/main/SECURITY.md"
 
 [project.scripts]
 ego = "ego_pod.cli:main"

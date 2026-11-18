@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import urlparse
 
+from ego_pod.config.base_models import is_valid_base_model_spec
 from ego_pod.config.schema import SUPPORTED_BASE_MODELS
 from ego_pod.exit_codes import ConfigError
 
@@ -139,10 +140,12 @@ def _check_editions_and_bases(data: Mapping[str, Any]) -> None:
             )
 
         base = _mapping_get(edition_def, "base")
-        if not isinstance(base, str) or base not in SUPPORTED_BASE_MODELS:
+        if not isinstance(base, str) or (
+            base not in SUPPORTED_BASE_MODELS and not is_valid_base_model_spec(base)
+        ):
             raise ConfigError(
                 f"editions.{raw_name}.base 非法（当前为 {base!r}）；"
-                f"受支持基座模型白名单为：{supported_str}"
+                f"受支持基座模型白名单为：{supported_str}（亦支持 Hugging Face org/repo 或本地模型目录）"
             )
 
         for int_override in ("lora_rank", "lora_alpha", "max_level"):

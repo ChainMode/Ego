@@ -243,16 +243,22 @@ def _apply_lora_adapter(
     )
     from safetensors.torch import load_file  # noqa: PLC0415
 
+    from ego_pod.trainer.peft_backend import resolve_lora_target_modules  # noqa: PLC0415
+
     # 若 base 已是 PEFT 模型（部分后端在加载阶段已挂适配器）则复用，否则构造同构骨架。
     if hasattr(model, "peft_config"):
         peft_model = model
     else:
-        lora_config = LoraConfig(
-            r=lora_rank,
-            lora_alpha=lora_alpha,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
+        target_modules = resolve_lora_target_modules(model)
+        lora_kwargs: dict[str, Any] = {
+            "r": lora_rank,
+            "lora_alpha": lora_alpha,
+            "bias": "none",
+            "task_type": "CAUSAL_LM",
+        }
+        if target_modules is not None:
+            lora_kwargs["target_modules"] = target_modules
+        lora_config = LoraConfig(**lora_kwargs)
         peft_model = get_peft_model(model, lora_config)
 
     adapter_state = load_file(str(adapter_path))
@@ -382,12 +388,18 @@ def _activate_cells(
         )
         from safetensors.torch import load_file  # noqa: PLC0415
 
-        lora_config = LoraConfig(
-            r=lora_rank,
-            lora_alpha=lora_alpha,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
+        from ego_pod.trainer.peft_backend import resolve_lora_target_modules  # noqa: PLC0415
+
+        target_modules = resolve_lora_target_modules(base)
+        lora_kwargs: dict[str, Any] = {
+            "r": lora_rank,
+            "lora_alpha": lora_alpha,
+            "bias": "none",
+            "task_type": "CAUSAL_LM",
+        }
+        if target_modules is not None:
+            lora_kwargs["target_modules"] = target_modules
+        lora_config = LoraConfig(**lora_kwargs)
         # 1. 首个（Kernel）适配器：构造同构 PEFT 骨架并灌入其适配器权重。
         peft_model = get_peft_model(base, lora_config, adapter_name=first_name)
         set_peft_model_state_dict(

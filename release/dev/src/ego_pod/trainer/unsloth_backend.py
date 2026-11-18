@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ego_pod.config.base_models import resolve_hf_repo_id
 from ego_pod.exit_codes import EgoError, TrainerError
 from ego_pod.logging_io import print_summary
 from ego_pod.trainer.base import BackendIdentifier, Hardware
@@ -91,11 +92,12 @@ class UnslothBackend(_PeftBackendBase):
         """
 
         try:
+            resolved_id = resolve_hf_repo_id(model_id)
             # 惰性导入：保证模块顶层 import 永不因缺依赖而失败（R8-AC4）。
             from unsloth import FastLanguageModel  # noqa: PLC0415
 
             model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=model_id,
+                model_name=resolved_id,
                 max_seq_length=self._MAX_SEQ_LEN,
                 load_in_4bit=True,
             )
@@ -109,8 +111,9 @@ class UnslothBackend(_PeftBackendBase):
             ) from exc
 
         # 加载摘要：model_id / 设备 / 实际量化方案（R1-AC4），与基类格式一致。
+        repo_part = f"hf_repo={resolved_id} " if resolved_id != model_id else ""
         print_summary(
-            f"Loaded base model: model_id={model_id} "
+            f"Loaded base model: model_id={model_id} {repo_part}"
             f"device=CUDA quantization=4bit (unsloth)"
         )
         return model, tokenizer
