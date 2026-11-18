@@ -161,10 +161,33 @@ def _build_sources(raw: Any) -> dict[str, SourceEntry] | None:
 
 
 def _build_source_entry(entry: Any) -> SourceEntry:
-    """转换单个数据源条目；缺失的 ``type`` / ``path`` 以 ``None`` 占位。"""
+    """转换单个数据源条目；支持 local / url / s3 / oss 与自定义插件参数。"""
     if not isinstance(entry, dict):
-        return SourceEntry(type=entry, path=None)  # 非映射条目：交给校验器拒绝
-    return SourceEntry(type=entry.get("type"), path=entry.get("path"))
+        return SourceEntry(type=entry, path=None)  # type: ignore[arg-type]
+    raw_hosts = entry.get("allowed_hosts")
+    hosts: tuple[str, ...] = (
+        tuple(str(h) for h in raw_hosts)
+        if isinstance(raw_hosts, (list, tuple))
+        else ()
+    )
+    known_keys = {"type", "path", "url", "bucket", "prefix", "allowed_hosts", "options"}
+    extra_opts = {k: v for k, v in entry.items() if k not in known_keys}
+    raw_opts = entry.get("options")
+    merged_opts: dict[str, Any] | None = None
+    if isinstance(raw_opts, dict) or extra_opts:
+        merged_opts = {}
+        if isinstance(raw_opts, dict):
+            merged_opts.update(raw_opts)
+        merged_opts.update(extra_opts)
+    return SourceEntry(
+        type=entry.get("type"),  # type: ignore[arg-type]
+        path=entry.get("path") if "path" in entry else "",  # type: ignore[arg-type]
+        url=entry.get("url"),
+        bucket=entry.get("bucket"),
+        prefix=str(entry.get("prefix", "") or ""),
+        allowed_hosts=hosts,
+        options=merged_opts,
+    )
 
 
 def _build_training(raw: Any) -> TrainingParams | None:
@@ -194,32 +217,37 @@ def _build_editions(raw: Any) -> dict[str, EditionDef] | None:
 
 
 def _build_edition_def(edition: Any) -> EditionDef:
-    """转换单个 Edition 定义；缺失的 ``base`` 以 ``None`` 占位。"""
+    """转换单个 Edition 定义（含可选 rank/alpha/max_level/max_size_mb/zones 覆盖）。"""
     if not isinstance(edition, dict):
         return EditionDef(base=edition)  # 非映射定义：交给校验器拒绝
     description = edition.get("description", "")
-    return EditionDef(base=edition.get("base"), description=description)
+    raw_zones = edition.get("zones")
+    zones = (
+        tuple(str(z) for z in raw_zones)
+        if isinstance(raw_zones, (list, tuple))
+        else None
+    )
+    return EditionDef(
+        base=edition.get("base"),  # type: ignore[arg-type]
+        description=str(description) if description is not None else "",
+        lora_rank=edition.get("lora_rank"),
+        lora_alpha=edition.get("lora_alpha"),
+        max_level=edition.get("max_level"),
+        max_size_mb=edition.get("max_size_mb"),
+        zones=zones,
+    )
 
 
 def _build_zone_config(raw: Any) -> ZoneConfig | None:
-    """转换可选的顶层 ``zones`` 段为 :class:`ZoneConfig`，沿用宽松构造风格。
-
-    与既有 ``_build_*`` 一致地不在此处做合法性判定（Zone_Name 正则、去重、
-    ``routing`` 取值是否指向已声明分区等均由 ``validators.py`` 的
-    ``_check_zone_config`` 负责）：
-
-    - ``zones`` 整块缺省（键不存在或值为 ``None``）⇒ 返回 ``None``，使
-      ``EgoConfig.zones`` 为 ``None``，下游据此回退到内置默认基线（R1-AC8/AC9）。
-    - ``zones`` 块存在但子字段缺失/类型异常 ⇒ 以空 ``tuple`` / 空 ``dict`` 宽松
-      占位，把合法性判定完整交给校验器。
-    """
+    """转换可选的顶层 ``zones`` 段为 :class:`ZoneConfig`，沿用宽松构造风格。"""
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        # 非映射的 zones 块（如标量/列表）：视为各子字段缺失，交给校验器拒绝。
         return ZoneConfig(zones=(), routing={})
     zones_raw = raw.get("zones") or []
     routing_raw = raw.get("routing") or {}
     zones = tuple(zones_raw) if isinstance(zones_raw, (list, tuple)) else ()
     routing = dict(routing_raw) if isinstance(routing_raw, dict) else {}
-    return ZoneConfig(zones=zones, routing=routing)
+    max_level_raw = raw.get("max_level", 1)
+    max_level = max_level_raw if isinstance(max_level_raw, int) else 1
+    return ZoneConfig(zones=zones, routing=routing, max_level=max_level)

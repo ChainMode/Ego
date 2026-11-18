@@ -38,9 +38,16 @@ import pytest
 #: （R6-AC8）。涵盖网格的纯逻辑新模块与接入网格的既有编排模块。
 _IMPORT_SAFE_MODULES = [
     "ego_pod",
+    "ego_pod.compiler.specificity",
     "ego_pod.compiler.routing",
+    "ego_pod.collector.plugins",
+    "ego_pod.collector.url",
+    "ego_pod.collector.cloud",
+    "ego_pod.collector.incremental",
     "ego_pod.runtime.selection",
     "ego_pod.vault.grid_descriptor",
+    "ego_pod.vault.history",
+    "ego_pod.commands.vault_cmd",
     "ego_pod.trainer.cells",
     "ego_pod.trainer.grid",
     "ego_pod.compiler.pipeline",

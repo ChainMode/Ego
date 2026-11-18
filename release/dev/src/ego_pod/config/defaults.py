@@ -1,30 +1,20 @@
-"""``ego init`` 写入的默认 Ego_Config 内容。
+"""``ego init`` 写入的默认与多规格 Ego_Config 模板。
 
-本模块负责渲染 ``ego init`` 生成的默认 ``ego-config.yaml`` 文本，并提供一个
-将其写入磁盘的薄封装 :func:`write_default`。渲染产物满足 Requirements 2.1–2.5：
-
-* 顶层包含 ``sources`` / ``training`` / ``editions`` / ``output`` 四个配置项
-  （R2-AC2）。
-* ``sources`` 下为 Sense / Action / Thought / Skill / Credentials 五个
-  Data_Category 各填充一个条目，每个条目同时包含 ``type: local`` 字段与一个
-  非空的本地目录占位路径（R2-AC3）。
-* ``editions`` 仅声明一个名为 ``normal`` 的 Edition，其 ``base`` 为
-  ``qwen3.5-0.8B``（R2-AC4）。
-* ``training.method`` 为 ``qlora``，并填充五个数值参数 ``lora_rank=16``、
-  ``lora_alpha=32``、``learning_rate=2e-4``、``epochs=3``、``batch_size=4``
-  （R2-AC5）。
-
-渲染输出的字段命名与 :mod:`ego_pod.config.schema` 中的 dataclass 一一对应，
-因此 ``loader`` 解析回来后可直接构造 :class:`~ego_pod.config.schema.EgoConfig`。
-
-注意：文件是否已存在、``--force`` 覆盖语义、I/O 错误下不留部分写入文件等
-逻辑由 ``commands/init.py``（Requirements 2.6–2.9）负责，本模块仅关注
-"渲染默认内容" 与 "以 UTF-8 写入给定路径" 两件事。
+本模块负责渲染 ``ego init`` 生成的 ``ego-config.yaml`` 文本：
+- :func:`render_default_yaml`：非交互式默认模板（保持 ``normal`` + ``qwen3.5-0.8B``，
+  并附带四档规格及远程数据源注释示例，100% 向后兼容既有 ``ego init`` 行为）。
+- :func:`render_all_editions_yaml`：``ego init --all-editions`` 生成的四档标准规格
+  （``lite`` / ``normal`` / ``plus`` / ``super``）模板。
+- :func:`render_custom_yaml`：``ego init --interactive`` 使用的参数化渲染器。
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
+
+from ego_pod.config.schema import EDITION_PRESETS
 
 __all__ = [
     "DEFAULT_SOURCE_PATHS",
@@ -33,12 +23,10 @@ __all__ = [
     "DEFAULT_BASE_MODEL",
     "DEFAULT_OUTPUT_DIR",
     "render_default_yaml",
+    "render_all_editions_yaml",
+    "render_custom_yaml",
     "write_default",
 ]
-
-
-# --- 默认值常量 ----------------------------------------------------------------
-# 集中定义便于单元测试断言默认值，并保证渲染与常量始终一致。
 
 # 五个 Data_Category 的本地数据源占位目录（固定顺序）。
 DEFAULT_SOURCE_PATHS: dict[str, str] = {
@@ -49,7 +37,7 @@ DEFAULT_SOURCE_PATHS: dict[str, str] = {
     "credentials": "./ego-data/credentials",
 }
 
-# QLoRA 训练参数默认值（与设计文档技术栈章一致）。
+# QLoRA 训练参数默认值。
 DEFAULT_TRAINING: dict[str, object] = {
     "method": "qlora",
     "quantization": "4bit",
@@ -60,21 +48,16 @@ DEFAULT_TRAINING: dict[str, object] = {
     "batch_size": 4,
 }
 
-# MVP 仅声明 normal edition，基座固定为 qwen3.5-0.8B。
+# 默认声明 normal edition，基座默认 qwen3.5-0.8B 以保证开箱零配置轻量可跑通。
 DEFAULT_EDITION_NAME = "normal"
 DEFAULT_BASE_MODEL = "qwen3.5-0.8B"
 
-# 产出目录配置（MVP 占位；Vault 实际在 CWD 下使用 ego-output/）。
+# 产出目录配置。
 DEFAULT_OUTPUT_DIR = "./ego-output"
 
 
 def _format_float(value: float) -> str:
-    """将浮点数渲染为定点小数字符串，避免被 YAML 解析为字符串。
-
-    PyYAML 的隐式 float 解析器不接受形如 ``2e-4`` 的无小数点科学计数法，
-    因此对含指数的表示展开为定点形式（如 ``0.0002``），保证 ``loader`` 解析
-    回来时得到的是 ``float`` 而非 ``str``。
-    """
+    """将浮点数渲染为定点小数字符串，避免被 YAML 解析为字符串。"""
 
     text = repr(value)
     if "e" in text or "E" in text:
@@ -83,12 +66,7 @@ def _format_float(value: float) -> str:
 
 
 def render_default_yaml() -> str:
-    """渲染默认 ``ego-config.yaml`` 的完整文本（含注释）。
-
-    :returns: 以 ``\\n`` 分隔、UTF-8 友好的 YAML 文本，末尾带一个换行符。
-        其结构与 :class:`~ego_pod.config.schema.EgoConfig` 字段一一对应，可被
-        ``loader`` 解析并通过 ``validators`` 的 MVP 范围校验。
-    """
+    """渲染默认 ``ego-config.yaml`` 的完整文本（含注释）。"""
 
     src = DEFAULT_SOURCE_PATHS
     tr = DEFAULT_TRAINING
@@ -96,10 +74,10 @@ def render_default_yaml() -> str:
     lines = [
         "# Ego Pod 配置文件 (ego-config.yaml)",
         "# 由 `ego init` 自动生成。所有相对路径均相对于本文件所在的工作目录。",
-        "# MVP 仅支持：local 数据源、qlora 训练方法、qwen3.5-0.8B 基座、normal edition。",
+        "# 支持 local / url / s3 / oss 数据源与 lite / normal / plus / super / 自定义 Edition。",
         "",
-        "# 五个 Data_Category 的本地数据源目录。",
-        "# 请将下列占位路径替换为你自己存放对应数据的本地目录。",
+        "# 五个 Data_Category 的数据源配置。",
+        "# 请将下列占位路径替换为你自己存放对应数据的目录或受控远程数据源。",
         "sources:",
         "  sense:",
         "    type: local",
@@ -127,49 +105,149 @@ def render_default_yaml() -> str:
         f"  epochs: {tr['epochs']}",
         f"  batch_size: {tr['batch_size']}",
         "",
-        "# Ego 模型版本规格。MVP 仅声明 normal edition。",
+        "# Ego 模型版本规格（可使用 `ego init --all-editions` 一键启用 lite/normal/plus/super）。",
         "editions:",
         f"  {DEFAULT_EDITION_NAME}:",
         f"    base: {DEFAULT_BASE_MODEL}",
         '    description: "默认 normal edition，基于 Qwen 3.5 0.8B + QLoRA。"',
+        "#  lite:",
+        "#    base: qwen3.5-0.8B",
+        '#    description: "轻量端侧规格（Kernel + L1，<= 64MB）"',
+        "#  plus:",
+        "#    base: qwen3.5-4B",
+        '#    description: "深度推理规格（Kernel + L1..L3，<= 1024MB）"',
+        "#  super:",
+        "#    base: qwen3.5-27B",
+        '#    description: "旗舰全网格规格（Kernel + L1..L3，<= 4096MB）"',
         "",
         "# 可选：功能分区分类法（Zone_Config）。省略整块则使用内置默认基线。",
-        "# Optional: Functional_Zone taxonomy (Zone_Config). Omit the whole",
-        "# block to use the built-in default baseline.",
-        "# 默认基线（即本块保持注释时的行为）：",
-        "#   coding    <- skill, action      knowledge <- thought",
-        "#   未列出的类别（sense / credentials）以及任何未匹配分区的样本归入 Kernel。",
-        "#   Categories not listed (sense / credentials) and any unmatched",
-        "#   samples are routed to the Kernel.",
-        "# 取消下面的注释即可自定义分区与路由（Zone_Name 由小写字母、数字、连字符组成且唯一）：",
         "# zones:",
-        "#   # 声明的功能分区集合。",
         "#   zones: [coding, knowledge]",
-        "#   # Data_Category -> 分区路由基线；未列出的类别路由到 Kernel。",
         "#   routing:",
         "#     skill: coding",
         "#     action: coding",
         "#     thought: knowledge",
-        "#     # sense / credentials 未列出 -> 归入 Kernel",
         "",
-        "# 产出目录配置（MVP 占位）。",
+        "# 产出目录与版本历史保留策略。",
         "output:",
         f"  dir: {DEFAULT_OUTPUT_DIR}",
+        "  max_history: 5",
         "",
     ]
     return "\n".join(lines)
 
 
-def write_default(path: str | Path) -> Path:
-    """将默认配置文本以 UTF-8（无 BOM）写入 ``path``。
+def render_custom_yaml(
+    *,
+    source_paths: Mapping[str, str] | None = None,
+    editions: Mapping[str, Mapping[str, Any]] | None = None,
+    training: Mapping[str, Any] | None = None,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    max_history: int = 5,
+) -> str:
+    """按给定数据源路径、训练参数与 Edition 集合渲染 ``ego-config.yaml``。"""
 
-    本函数仅负责渲染并写入；文件是否已存在、``--force`` 覆盖、写入失败时的
-    清理等策略由调用方（``commands/init.py``）处理。
+    src = dict(DEFAULT_SOURCE_PATHS)
+    if source_paths is not None:
+        src.update(source_paths)
 
-    :param path: 目标 ``ego-config.yaml`` 路径。
-    :returns: 写入文件的 :class:`~pathlib.Path`（已解析为绝对路径）。
-    """
+    tr = dict(DEFAULT_TRAINING)
+    if training is not None:
+        tr.update(training)
+
+    ed_map: dict[str, dict[str, Any]]
+    if editions is not None:
+        ed_map = {k: dict(v) for k, v in editions.items()}
+    else:
+        ed_map = {
+            DEFAULT_EDITION_NAME: {
+                "base": DEFAULT_BASE_MODEL,
+                "description": "默认 normal edition，基于 Qwen 3.5 0.8B + QLoRA。",
+            }
+        }
+
+    lines = [
+        "# Ego Pod 配置文件 (ego-config.yaml)",
+        "sources:",
+    ]
+    for cat in ("sense", "action", "thought", "skill", "credentials"):
+        lines.extend(
+            [
+                f"  {cat}:",
+                "    type: local",
+                f"    path: {src[cat]}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "training:",
+            f"  method: {tr['method']}",
+            f"  quantization: {tr['quantization']}",
+            f"  lora_rank: {tr['lora_rank']}",
+            f"  lora_alpha: {tr['lora_alpha']}",
+            f"  learning_rate: {_format_float(float(tr['learning_rate']))}",
+            f"  epochs: {tr['epochs']}",
+            f"  batch_size: {tr['batch_size']}",
+            "",
+            "editions:",
+        ]
+    )
+
+    for ed_name, ed_cfg in ed_map.items():
+        lines.append(f"  {ed_name}:")
+        lines.append(f"    base: {ed_cfg['base']}")
+        desc = str(ed_cfg.get("description", "")).replace('"', '\\"')
+        if desc:
+            lines.append(f'    description: "{desc}"')
+        for opt_key in ("lora_rank", "lora_alpha", "max_level", "max_size_mb"):
+            if opt_key in ed_cfg and ed_cfg[opt_key] is not None:
+                lines.append(f"    {opt_key}: {ed_cfg[opt_key]}")
+        if "zones" in ed_cfg and ed_cfg["zones"] is not None:
+            z_list = ", ".join(str(z) for z in ed_cfg["zones"])
+            lines.append(f"    zones: [{z_list}]")
+
+    lines.extend(
+        [
+            "",
+            "output:",
+            f"  dir: {output_dir}",
+            f"  max_history: {max_history}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_all_editions_yaml() -> str:
+    """渲染包含全部四档标准规格（lite / normal / plus / super）的 ``ego-config.yaml``。"""
+
+    editions: dict[str, dict[str, Any]] = {
+        "lite": {
+            "base": EDITION_PRESETS["lite"].default_base,
+            "description": "轻量端侧规格（Kernel + L1，<= 64MB）",
+        },
+        "normal": {
+            "base": EDITION_PRESETS["normal"].default_base,
+            "description": "均衡日常规格（Kernel + L1..L2，<= 256MB）",
+        },
+        "plus": {
+            "base": EDITION_PRESETS["plus"].default_base,
+            "description": "深度推理规格（Kernel + L1..L3，<= 1024MB）",
+        },
+        "super": {
+            "base": EDITION_PRESETS["super"].default_base,
+            "description": "旗舰全网格规格（Kernel + L1..L3，<= 4096MB）",
+        },
+    }
+    return render_custom_yaml(editions=editions)
+
+
+def write_default(path: str | Path, *, all_editions: bool = False) -> Path:
+    """将默认（或四档全规格）配置文本以 UTF-8（无 BOM）写入 ``path``。"""
 
     target = Path(path)
-    target.write_text(render_default_yaml(), encoding="utf-8")
+    content = render_all_editions_yaml() if all_editions else render_default_yaml()
+    target.write_text(content, encoding="utf-8")
     return target.resolve()

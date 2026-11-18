@@ -1,37 +1,16 @@
-"""Ego_Config 的 MVP 范围校验规则。
+"""Ego_Config 的结构、安全红线与多规格范围校验规则（ADR 0005 / ADR 0006）。
 
-本模块在 ``loader`` 完成 YAML 解析（对应 Requirements 3.1–3.4 的文件加载与
-语法解析）之后，对解析得到的**原始映射**执行 Requirements 3.5–3.9 所定义的
-结构与取值校验，并在全部通过时打印 Requirements 3.10 要求的成功确认信息。
+校验顺序严格保持短路语义（检测到首个违规即抛出 :class:`~ego_pod.exit_codes.ConfigError`，
+退出码 2，不打印成功确认信息）：
 
-为什么校验作用于"原始映射"而非已构造的 :class:`~ego_pod.config.schema.EgoConfig`：
-R3-AC5 要求在顶层缺失 ``sources`` / ``training`` / ``editions`` 任一字段时给出
-报错，而带有必填字段的 ``EgoConfig`` dataclass 在字段缺失时根本无法被构造。
-因此本模块以 ``loader`` 解析出的 :class:`~collections.abc.Mapping`（PyYAML 的
-解析产物）作为输入；``loader``（任务 2.3）应当在调用 :func:`validate` 通过后，
-再据此构造 ``EgoConfig`` 并返回。
-
-校验顺序严格遵循 Requirements 3.11 规定的 AC 编号升序短路（本模块负责
-AC5 → AC6 → AC7 → AC8 → AC9，AC3/AC4 的 I/O 与语法错误由 ``loader`` 处理），
-并在其后追加 Requirements 8.9 的五个 LoRA 训练参数完备性/合法性预检：
-
-================  ============================================================
-检查步骤          语义（对应 Requirement）
-================  ============================================================
-顶层缺失          R3-AC5：按 sources → training → editions 顺序检测，仅报告首个缺失
-normal-only       R3-AC6：``editions`` 必须声明 ``normal`` Edition
-qwen3.5-0.8B-only R3-AC7：``editions.normal.base`` 必须为 ``qwen3.5-0.8B``
-local-only        R3-AC8 / R9-AC2：``sources`` 中不得存在 ``type`` 非 ``local`` 的条目
-qlora-only        R3-AC9：``training.method`` 必须为 ``qlora``
-五参数完备性      R8-AC9：lora_rank/lora_alpha/epochs/batch_size 为正整数、learning_rate > 0
-Zone_Config       R1-AC3/AC10：可选 ``zones`` 块的 Zone_Name 正则/去重/routing 取值合法性
-================  ============================================================
-
-任一步骤检测到违规即抛出 :class:`~ego_pod.exit_codes.ConfigError`（退出码 2）
-并立即停止，不继续后续检查，也不收集或合并多条错误（Requirements 3.11）。
-仅当上述全部检查通过时，:func:`validate` 才向标准输出打印
-``Config validated: <绝对路径>``（Requirements 3.10）；任一校验失败分支均不
-打印该确认信息。
+1. 顶层必需项（``sources`` → ``training`` → ``editions``）；
+2. ``editions`` 非空、规格名称匹配 ``^[a-z0-9][a-z0-9-]{0,31}$``、各规格 ``base`` 属于
+   :data:`~ego_pod.config.schema.SUPPORTED_BASE_MODELS` 白名单及可选覆盖参数合法；
+3. ``sources`` 条目拒绝任何明文凭证字段，并校验 ``local`` / ``url`` / ``s3`` / ``oss``
+   或已注册插件类型及其必填参数；
+4. ``training.method == "qlora"``；
+5. 五个 LoRA 训练参数完备性；
+6. 可选 ``zones`` 块与 ``output.max_history`` 合法性。
 """
 
 from __future__ import annotations
@@ -41,33 +20,16 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import urlparse
 
+from ego_pod.config.schema import SUPPORTED_BASE_MODELS
 from ego_pod.exit_codes import ConfigError
 
 __all__ = ["validate"]
 
-
-# ---------------------------------------------------------------------------
-# 常量
-# ---------------------------------------------------------------------------
-
-#: R3-AC5 顶层必需配置项的固定检测顺序（``output`` 不在 R3-AC5 检测范围内）。
 _REQUIRED_TOP_LEVEL: tuple[str, ...] = ("sources", "training", "editions")
-
-#: MVP 唯一支持的 Edition 名称。
-_REQUIRED_EDITION = "normal"
-
-#: MVP 唯一支持的基座模型标识。
-_REQUIRED_BASE_MODEL = "qwen3.5-0.8B"
-
-#: MVP 唯一支持的数据源类型。
-_REQUIRED_SOURCE_TYPE = "local"
-
-#: MVP 唯一支持的训练方法。
 _REQUIRED_TRAINING_METHOD = "qlora"
 
-#: R8-AC9 五个 LoRA 训练参数的检测顺序与各自约束类型。
-#: ``"pos_int"`` 表示正整数；``"pos_num"`` 表示大于 0 的数值。
 _TRAINING_PARAM_SPECS: tuple[tuple[str, str], ...] = (
     ("lora_rank", "pos_int"),
     ("lora_alpha", "pos_int"),
@@ -81,51 +43,52 @@ _CONSTRAINT_TEXT = {
     "pos_num": "必须为大于 0 的数值",
 }
 
-#: R1-AC3 Zone_Name 取值规则：仅由小写字母、数字与连字符组成且非空。
+_EDITION_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _ZONE_NAME_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
-#: 固定五元 Data_Category 集合；``routing`` 的键理想上属于该集合，但落在集合外
-#: 的键永不命中任何样本，故仅视为无害（不致命），见 :func:`_check_zone_config`。
 _DATA_CATEGORIES: frozenset[str] = frozenset(
     {"sense", "action", "thought", "skill", "credentials"}
 )
 
+#: 严禁写入 ego-config.yaml 的明文云端/API 凭证字段名集合（ADR 0006 §5）。
+_FORBIDDEN_CREDENTIAL_KEYS: frozenset[str] = frozenset(
+    {
+        "access_key",
+        "secret_key",
+        "access_key_id",
+        "secret_access_key",
+        "token",
+        "session_token",
+        "api_key",
+        "password",
+        "credentials_json",
+    }
+)
 
-# ---------------------------------------------------------------------------
-# 小工具
-# ---------------------------------------------------------------------------
+_LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def _mapping_get(obj: Any, key: str) -> Any:
-    """从 ``obj`` 取键 ``key``；若 ``obj`` 不是映射则返回 ``None``。"""
-
     if isinstance(obj, Mapping):
         return obj.get(key)
     return None
 
 
 def _is_present(data: Any, key: str) -> bool:
-    """判断顶层字段是否"存在"。
-
-    一个字段被视为缺失，当且仅当其键不存在，或其值为 ``None``
-    （例如 YAML 中写成空的 ``sources:``）。空映射等其他取值视为存在，
-    由后续语义检查处理。
-    """
-
     if not isinstance(data, Mapping):
         return False
     return key in data and data[key] is not None
 
 
 def _is_pos_int(value: Any) -> bool:
-    """是否为正整数（排除 ``bool``，因其在 Python 中是 ``int`` 的子类）。"""
-
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _is_pos_num(value: Any) -> bool:
-    """是否为大于 0 的数值（``int`` 或 ``float``，排除 ``bool``）。"""
+def _is_non_neg_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
+
+def _is_pos_num(value: Any) -> bool:
     return (
         isinstance(value, (int, float))
         and not isinstance(value, bool)
@@ -134,27 +97,20 @@ def _is_pos_num(value: Any) -> bool:
 
 
 def _is_iterable_seq(value: Any) -> bool:
-    """是否为可按声明顺序遍历的序列（``list`` / ``tuple``）。
-
-    用于 Zone_Config 的 ``zones.zones`` 声明列表：YAML 序列解析为 ``list``。
-    字符串虽可迭代但语义上不是分区名列表，故排除；其他非序列取值（``None`` /
-    映射 / 标量）一律视为"无声明分区"。
-    """
-
     return isinstance(value, (list, tuple))
 
 
-# ---------------------------------------------------------------------------
-# 各校验步骤（按 AC 编号升序）
-# ---------------------------------------------------------------------------
+def _is_registered_plugin_type(source_type: str) -> bool:
+    """惰性检查自定义数据源插件是否已在插件注册表中注册。"""
+
+    try:
+        from ego_pod.collector.plugins import is_registered_collector_plugin  # noqa: PLC0415
+    except ImportError:
+        return False
+    return is_registered_collector_plugin(source_type)
 
 
 def _check_top_level_present(data: Any) -> None:
-    """R3-AC5：按 sources → training → editions 顺序检测顶层缺失。
-
-    仅报告首个被检测到的缺失字段并立即抛错，不合并多个缺失字段。
-    """
-
     for field in _REQUIRED_TOP_LEVEL:
         if not _is_present(data, field):
             raise ConfigError(
@@ -162,68 +118,140 @@ def _check_top_level_present(data: Any) -> None:
             )
 
 
-def _check_normal_edition(data: Mapping[str, Any]) -> None:
-    """R3-AC6：``editions`` 必须声明 ``normal`` Edition。"""
+def _check_editions_and_bases(data: Mapping[str, Any]) -> None:
+    """校验多规格 editions 字典、规格命名、受控基座白名单与可选单规格覆盖项。"""
 
     editions = data["editions"]
-    if _mapping_get(editions, _REQUIRED_EDITION) is None:
-        raise ConfigError("MVP 仅支持 normal Edition：editions 中未声明 normal")
-
-
-def _check_base_model(data: Mapping[str, Any]) -> None:
-    """R3-AC7：``editions.normal.base`` 必须为 ``qwen3.5-0.8B``。"""
-
-    normal = data["editions"][_REQUIRED_EDITION]
-    base = _mapping_get(normal, "base")
-    if base != _REQUIRED_BASE_MODEL:
+    if not isinstance(editions, Mapping) or not editions:
         raise ConfigError(
-            "MVP 仅支持 qwen3.5-0.8B 基座："
-            f"editions.normal.base 当前为 {base!r}"
+            "editions 不能为空映射：请至少声明一个有效 Edition（如 normal / lite / plus / super 或自定义规格）"
         )
 
+    supported_str = ", ".join(SUPPORTED_BASE_MODELS)
+    for raw_name, edition_def in editions.items():
+        if not isinstance(raw_name, str) or not _EDITION_NAME_PATTERN.fullmatch(raw_name):
+            raise ConfigError(
+                f"非法的 Edition 名称 {raw_name!r}：必须匹配 ^[a-z0-9][a-z0-9-]{{0,31}}$"
+            )
+        if not isinstance(edition_def, Mapping):
+            raise ConfigError(
+                f"editions.{raw_name} 必须为映射对象并包含合法 base 字段（受支持基座：{supported_str}）"
+            )
 
-def _check_local_sources(data: Mapping[str, Any]) -> None:
-    """R3-AC8 / R9-AC2：``sources`` 中不得存在 ``type`` 非 ``local`` 的条目。
+        base = _mapping_get(edition_def, "base")
+        if not isinstance(base, str) or base not in SUPPORTED_BASE_MODELS:
+            raise ConfigError(
+                f"editions.{raw_name}.base 非法（当前为 {base!r}）；"
+                f"受支持基座模型白名单为：{supported_str}"
+            )
 
-    按 ``sources`` 中的条目顺序检测，报告首个违规条目的名称及统一文案
-    "MVP 仅支持 local 数据源"。该检查同时满足 R9-AC2 在配置阶段对非 local
-    数据源的拒绝语义。
-    """
+        for int_override in ("lora_rank", "lora_alpha", "max_level"):
+            if int_override in edition_def and edition_def[int_override] is not None:
+                if not _is_pos_int(edition_def[int_override]):
+                    raise ConfigError(
+                        f"editions.{raw_name}.{int_override} 必须为正整数"
+                    )
+
+        if "max_size_mb" in edition_def and edition_def["max_size_mb"] is not None:
+            if not _is_pos_num(edition_def["max_size_mb"]):
+                raise ConfigError(
+                    f"editions.{raw_name}.max_size_mb 必须为大于 0 的数值"
+                )
+
+        if "zones" in edition_def and edition_def["zones"] is not None:
+            raw_zones = edition_def["zones"]
+            if not _is_iterable_seq(raw_zones):
+                raise ConfigError(
+                    f"editions.{raw_name}.zones 必须为分区名称列表"
+                )
+            for z_name in raw_zones:
+                if not isinstance(z_name, str) or not _ZONE_NAME_PATTERN.fullmatch(z_name):
+                    raise ConfigError(
+                        f"editions.{raw_name}.zones 含非法 Zone_Name {z_name!r}"
+                    )
+
+
+def _validate_url_field(name: str, raw_url: Any) -> None:
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        raise ConfigError(
+            f"数据源条目 '{name}' 的 type 为 'url' 但缺少合法 url 字段"
+            "（若使用本地目录请设为 local 数据源）"
+        )
+    parsed = urlparse(raw_url.strip())
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    if scheme == "https" and host:
+        return
+    if scheme == "http" and host in _LOOPBACK_HOSTS:
+        return
+    raise ConfigError(
+        f"数据源条目 '{name}' 的 url {raw_url!r} 不满足传输安全要求："
+        "仅允许 https:// 或本地环回 http://127.0.0.1|localhost（若使用本地目录请设为 local 数据源）"
+    )
+
+
+def _check_sources(data: Mapping[str, Any]) -> None:
+    """校验数据源条目：拦截明文凭证并校验内置/插件数据源必填字段。"""
 
     sources = data["sources"]
     if not isinstance(sources, Mapping):
-        # 结构异常（如 sources 为列表/标量）不在 R3-AC8 的逐条目检测范围内，
-        # 留待 loader 构造 EgoConfig 时按结构错误处理。
         return
 
     for name, entry in sources.items():
+        if isinstance(entry, Mapping):
+            for key in entry.keys():
+                if str(key).lower() in _FORBIDDEN_CREDENTIAL_KEYS:
+                    raise ConfigError(
+                        f"数据源条目 '{name}' 包含禁止写入配置文件的明文凭证字段 {key!r}；"
+                        "请移除该字段并改用环境变量 EGO_CLOUD_ACCESS_KEY_ID / EGO_CLOUD_SECRET_ACCESS_KEY"
+                    )
+            nested_opts = entry.get("options")
+            if isinstance(nested_opts, Mapping):
+                for key in nested_opts.keys():
+                    if str(key).lower() in _FORBIDDEN_CREDENTIAL_KEYS:
+                        raise ConfigError(
+                            f"数据源条目 '{name}.options' 包含禁止落盘的明文凭证字段 {key!r}；"
+                            "请改用环境变量 EGO_CLOUD_ACCESS_KEY_ID / EGO_CLOUD_SECRET_ACCESS_KEY"
+                        )
+
         entry_type = _mapping_get(entry, "type")
-        if entry_type != _REQUIRED_SOURCE_TYPE:
-            raise ConfigError(
-                f"数据源条目 '{name}' 的 type 为 {entry_type!r}："
-                "MVP 仅支持 local 数据源"
+        if entry_type == "local":
+            continue
+        if entry_type == "url":
+            _validate_url_field(str(name), _mapping_get(entry, "url"))
+            continue
+        if entry_type in ("s3", "oss"):
+            bucket = _mapping_get(entry, "bucket")
+            raw_url = _mapping_get(entry, "url")
+            has_bucket = isinstance(bucket, str) and bool(bucket.strip())
+            has_cloud_uri = isinstance(raw_url, str) and raw_url.strip().startswith(
+                ("s3://", "oss://")
             )
+            if not (has_bucket or has_cloud_uri):
+                raise ConfigError(
+                    f"数据源条目 '{name}' 的 type 为 {entry_type!r} 但缺少 bucket 或 {entry_type}:// URI"
+                    "（若使用本地目录请设为 local 数据源）"
+                )
+            continue
+        if isinstance(entry_type, str) and entry_type and _is_registered_plugin_type(entry_type):
+            continue
+
+        raise ConfigError(
+            f"数据源条目 '{name}' 的 type 为 {entry_type!r}："
+            "不支持的数据源类型（内置支持 local 数据源 / url / s3 / oss 或已注册插件）"
+        )
 
 
 def _check_training_method(data: Mapping[str, Any]) -> None:
-    """R3-AC9：``training.method`` 必须为 ``qlora``。"""
-
     method = _mapping_get(data["training"], "method")
     if method != _REQUIRED_TRAINING_METHOD:
         raise ConfigError(
-            "MVP 仅支持 qlora 训练方法："
+            "仅支持 qlora 训练方法："
             f"training.method 当前为 {method!r}"
         )
 
 
 def _check_training_params(data: Mapping[str, Any]) -> None:
-    """R8-AC9：五个 LoRA 训练参数的完备性与合法性预检。
-
-    按 lora_rank → lora_alpha → learning_rate → epochs → batch_size 顺序检测，
-    报告首个缺失或非法的参数名。lora_rank/lora_alpha/epochs/batch_size 必须为
-    正整数，learning_rate 必须为大于 0 的数值。
-    """
-
     training = data["training"]
     for name, kind in _TRAINING_PARAM_SPECS:
         value = _mapping_get(training, name)
@@ -235,40 +263,17 @@ def _check_training_params(data: Mapping[str, Any]) -> None:
 
 
 def _check_zone_config(data: Any) -> None:
-    """R1-AC3 / AC10 / R7-AC1：可选 ``zones`` 块的 Zone_Config 校验。
-
-    校验作用于 ``loader`` 解析得到的原始映射中的 ``zones`` 子块，其形如::
-
-        zones:
-          zones: [coding, social, knowledge]   # 声明的 Functional_Zone 名称集合
-          routing:                               # Data_Category → Zone_Name 路由基线
-            skill: coding
-            action: coding
-
-    校验规则（沿用既有短路风格：检测到首个错误即抛 :class:`ConfigError`、
-    退出码 2，不合并多错）：
-
-    - **整体缺省**：``zones`` 块缺失（键不存在或值为 ``None``）⇒ 跳过全部校验，
-      下游回退到内置默认基线（R1-AC8）。
-    - **Zone_Name 正则**（R1-AC3）：``zones.zones`` 中每个声明的分区名须匹配
-      ``^[a-z0-9-]+$``。首个违规 → ``ConfigError``，消息含该违规 Zone_Name。
-    - **去重**（R1-AC10）：``zones.zones`` 内出现重复 Zone_Name → ``ConfigError``，
-      消息含首个重复名。
-    - **routing 取值合法性**：``routing`` 的每个值必须指向已声明的 Zone_Name；
-      指向未声明分区的值 → ``ConfigError``（消息含该 routing 键与未声明的值）。
-      ``routing`` 的键理想上属于 Data_Category 五元集，但落在集合外的键永不命中
-      任何样本，因而无害——此处仅在标准错误打印告警，不致命。
-    """
-
     zones_block = _mapping_get(data, "zones")
     if zones_block is None:
-        # R1-AC8：未声明 Zone_Config ⇒ 跳过校验，下游采用默认基线。
         return
+
+    if isinstance(zones_block, Mapping) and "max_level" in zones_block and zones_block["max_level"] is not None:
+        if not _is_pos_int(zones_block["max_level"]):
+            raise ConfigError("zones.max_level 必须为正整数")
 
     declared_raw = _mapping_get(zones_block, "zones")
     declared: list[Any] = list(declared_raw) if _is_iterable_seq(declared_raw) else []
 
-    # R1-AC3 + R1-AC10：按声明顺序逐个校验正则合法性与重复。
     seen: set[str] = set()
     for name in declared:
         if not isinstance(name, str) or not _ZONE_NAME_PATTERN.fullmatch(name):
@@ -282,11 +287,9 @@ def _check_zone_config(data: Any) -> None:
             )
         seen.add(name)
 
-    # routing 取值合法性：每个值必须指向已声明的 Zone_Name。
     routing = _mapping_get(zones_block, "routing")
     if isinstance(routing, Mapping):
         for category, target in routing.items():
-            # 键不属于 Data_Category 五元集 ⇒ 永不命中样本，仅告警不致命。
             if category not in _DATA_CATEGORIES:
                 print(
                     f"警告：routing 中的键 {category!r} 不属于 Data_Category 五元集"
@@ -301,9 +304,13 @@ def _check_zone_config(data: Any) -> None:
                 )
 
 
-# ---------------------------------------------------------------------------
-# 对外入口
-# ---------------------------------------------------------------------------
+def _check_output_config(data: Any) -> None:
+    output_block = _mapping_get(data, "output")
+    if not isinstance(output_block, Mapping):
+        return
+    if "max_history" in output_block and output_block["max_history"] is not None:
+        if not _is_non_neg_int(output_block["max_history"]):
+            raise ConfigError("output.max_history 必须为非负整数")
 
 
 def validate(
@@ -312,31 +319,16 @@ def validate(
     *,
     stream: TextIO | None = None,
 ) -> None:
-    """对原始配置映射执行 MVP 范围校验。
+    """对原始配置映射执行结构、基座白名单与安全红线校验。"""
 
-    校验通过时向标准输出（或 ``stream``）打印一条形如
-    ``Config validated: <绝对路径>`` 的确认信息（Requirements 3.10）；任一
-    校验步骤检测到违规时抛出 :class:`~ego_pod.exit_codes.ConfigError`（退出码 2）
-    并**不**打印该确认信息。
+    _check_top_level_present(data)
+    _check_editions_and_bases(data)
+    _check_sources(data)
+    _check_training_method(data)
+    _check_training_params(data)
+    _check_zone_config(data)
+    _check_output_config(data)
 
-    :param data: ``loader`` 由 YAML 解析得到的原始对象（正常情况下为
-        :class:`~collections.abc.Mapping`）。
-    :param config_path: ``ego-config.yaml`` 的路径，用于成功确认信息中的
-        绝对路径展示；内部会解析为绝对路径。
-    :param stream: 成功确认信息的目标输出流，默认 ``sys.stdout``。
-    :raises ConfigError: 当任一校验步骤检测到违规（退出码 2）。
-    """
-
-    # 按 AC 编号升序短路：任一步骤抛出 ConfigError 即立即终止。
-    _check_top_level_present(data)   # R3-AC5
-    _check_normal_edition(data)      # R3-AC6
-    _check_base_model(data)          # R3-AC7
-    _check_local_sources(data)       # R3-AC8 / R9-AC2
-    _check_training_method(data)     # R3-AC9
-    _check_training_params(data)     # R8-AC9
-    _check_zone_config(data)         # R1-AC3 / AC10 / R7-AC1
-
-    # 仅在全部校验通过后打印成功确认信息（Requirements 3.10）。
     abs_path = Path(config_path).resolve()
     target = sys.stdout if stream is None else stream
     print(f"Config validated: {abs_path}", file=target, flush=True)

@@ -37,7 +37,7 @@ HTTP 客户端发送原始训练数据；基座权重的下载（若发生）由
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
@@ -53,12 +53,18 @@ from ego_pod.trainer.base import (
     resolve_identifier,
 )
 from ego_pod.trainer.detect import detect_backend
+from ego_pod.trainer.loop import is_oom_error
 
 __all__ = [
+    "MAX_OOM_RETRIES",
     "TrainingResult",
     "make_progress_callback",
     "run_training",
+    "run_training_with_telemetry",
 ]
+
+#: OOM 自动 batch_size 减半重试最大次数（ADR 0006 §4）。
+MAX_OOM_RETRIES = 3
 
 #: MVP 唯一支持的基座模型标识（与 ``config.validators`` 中的 R3-AC7 约束一致）。
 DEFAULT_MODEL_ID = "qwen3.5-0.8B"
@@ -295,21 +301,16 @@ def run_training(
         )
         active_offline.require_base_model_available(available)
 
-    # 4. 加载基座（R8-AC3）。在线模式下加载失败按 R8-AC7 包装为 TrainerError；
-    #    EgoError 子类（含 OfflineMissingWeightsError / TrainerError）原样上抛，
-    #    以保持各自的退出码语义不被覆盖。
-    try:
-        model = selected.load_base_model(model_id, params.quantization)
-    except EgoError:
-        raise
-    except Exception as exc:
-        raise TrainerError(f"Base_Model 加载失败：{exc}") from exc
+    # 4–6. 基座加载、训练循环（带 OOM 自动 batch_size 减半重试）与导出。
+    model, _eff_bs, _retries = _execute_with_oom_backoff(
+        selected=selected,
+        model_id=model_id,
+        corpus_path=corpus_path,
+        params=params,
+        progress_callback=make_progress_callback(stream=stdout),
+        stdout=stdout,
+    )
 
-    # 5. 训练循环（R8-AC8）：进度回调由后端至少每 epoch 调用一次。
-    progress_callback = make_progress_callback(stream=stdout)
-    selected.train(model, corpus_path, params, progress_callback)
-
-    # 6. 导出 LoRA_Adapter 到 {cwd}/.ego/lora.safetensors（R8-AC6）。
     target_path.parent.mkdir(parents=True, exist_ok=True)
     selected.export_lora_safetensors(model, target_path)
 
@@ -318,4 +319,110 @@ def run_training(
         backend_name=selected.name,
         backend_hardware=selected.hardware,
         backend_identifier=resolve_identifier(selected),
+    )
+
+
+def _execute_with_oom_backoff(
+    *,
+    selected: TrainingBackend,
+    model_id: str,
+    corpus_path: Path,
+    params: TrainingParams,
+    progress_callback: ProgressCallback,
+    stdout: TextIO | None = None,
+    max_retries: int = MAX_OOM_RETRIES,
+    label: str | None = None,
+) -> tuple[Any, int, int]:
+    """执行单次或按 Cell 训练，遭遇 OOM 时自动减半 ``batch_size`` 重试最多 ``max_retries`` 次。"""
+
+    current_bs = params.batch_size
+    retries = 0
+    prefix = f"[{label}] " if label else ""
+
+    while True:
+        try:
+            model = selected.load_base_model(model_id, params.quantization)
+        except EgoError:
+            raise
+        except Exception as exc:
+            raise TrainerError(f"Base_Model 加载失败：{exc}") from exc
+
+        attempt_params = replace(params, batch_size=current_bs)
+        try:
+            selected.train(model, corpus_path, attempt_params, progress_callback)
+            return model, current_bs, retries
+        except Exception as exc:  # noqa: BLE001
+            if is_oom_error(exc):
+                if retries < max_retries and current_bs > 1:
+                    next_bs = max(1, current_bs // 2)
+                    retries += 1
+                    print_summary(
+                        f"{prefix}[OOM retry {retries}/{max_retries}] "
+                        f"显存/内存不足，batch_size 自动减半：{current_bs} -> {next_bs}",
+                        stream=stdout,
+                    )
+                    current_bs = next_bs
+                    continue
+                raise TrainerError(
+                    f"{prefix}显存/内存不足（OOM），在 batch_size={current_bs} "
+                    f"（已重试 {retries} 次）后仍失败：{exc}"
+                ) from exc
+            if isinstance(exc, EgoError):
+                raise
+            raise TrainerError(f"{prefix}训练失败：{exc}") from exc
+
+
+def run_training_with_telemetry(
+    corpus_path: Path,
+    params: TrainingParams,
+    *,
+    model_id: str = DEFAULT_MODEL_ID,
+    cwd: Path | None = None,
+    output_path: Path | None = None,
+    backend: TrainingBackend | None = None,
+    offline: OfflineMode | None = None,
+    base_model_available_check: Callable[[str], bool] | None = None,
+    stdout: TextIO | None = None,
+) -> tuple[TrainingResult, int, int]:
+    """执行单适配器训练并返回 ``(TrainingResult, effective_batch_size, oom_retries)``。"""
+
+    base_cwd = Path.cwd() if cwd is None else Path(cwd)
+    target_path = (
+        base_cwd / ".ego" / LORA_OUTPUT_FILENAME
+        if output_path is None
+        else Path(output_path)
+    )
+    selected = backend if backend is not None else detect_backend()
+    print_summary(
+        f"Selected backend: {selected.name} ({selected.hardware})",
+        stream=stdout,
+    )
+    _validate_training_params(params)
+
+    active_offline = offline if offline is not None else get_active_offline_mode()
+    if active_offline is not None and active_offline.enabled:
+        available = _base_model_available(
+            selected, model_id, check=base_model_available_check
+        )
+        active_offline.require_base_model_available(available)
+
+    model, eff_bs, retries = _execute_with_oom_backoff(
+        selected=selected,
+        model_id=model_id,
+        corpus_path=corpus_path,
+        params=params,
+        progress_callback=make_progress_callback(stream=stdout),
+        stdout=stdout,
+    )
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    selected.export_lora_safetensors(model, target_path)
+    return (
+        TrainingResult(
+            output_path=target_path,
+            backend_name=selected.name,
+            backend_hardware=selected.hardware,
+            backend_identifier=resolve_identifier(selected),
+        ),
+        eff_bs,
+        retries,
     )

@@ -66,6 +66,7 @@ __all__ = [
     "kernel_relpath",
     "zone_cell_relpath",
     "build_grid_descriptor",
+    "build_multi_edition_grid_descriptor",
     "parse_grid_descriptor",
 ]
 
@@ -186,6 +187,17 @@ def build_grid_descriptor(
     }
 
 
+def build_multi_edition_grid_descriptor(
+    edition_cells: dict[str, list[TrainedCell]],
+) -> dict:
+    """将多个 Edition 各自的已训练 Cell 列表合并构造为顶层 ``manifest.grid`` 字典。"""
+
+    merged: dict = {}
+    for edition, cells in edition_cells.items():
+        merged.update(build_grid_descriptor(cells, edition=edition))
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # 解析：manifest 的 grid 描述 → 内存 Grid（build 的逆）
 # ---------------------------------------------------------------------------
@@ -221,6 +233,12 @@ def parse_grid_descriptor(
             zones={},
         )
 
+    if edition not in grid:
+        from ego_pod.exit_codes import RuntimeError_
+
+        raise RuntimeError_(
+            f"manifest.grid 中不存在 Edition {edition!r} 的网格描述（可用：{sorted(grid.keys())}）"
+        )
     edition_grid = grid[edition]
 
     kernel = GridCell(cell=KERNEL, relpath=edition_grid["kernel"]["path"])

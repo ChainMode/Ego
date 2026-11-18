@@ -9,24 +9,24 @@
 - [x] CLI tools (ego init / train / run)
 
 ## Phase 2: Multi-Version Support
-- [ ] Four default editions (lite/normal/plus/super)
-- [ ] Multi-base support (Qwen, Gemma, Phi)
-- [ ] Custom editions
-- [ ] Version management and rollback
+- [x] Four default editions (lite/normal/plus/super)
+- [x] Multi-base support (Qwen, Gemma, Phi)
+- [x] Custom editions
+- [x] Version management and rollback
 
 ## Phase 3: Data Source Expansion
-- [ ] URL data source support
-- [ ] Cloud storage data sources (S3/OSS)
-- [ ] Data source plugin mechanism
-- [ ] Incremental data collection and incremental training
+- [x] URL data source support
+- [x] Cloud storage data sources (S3/OSS)
+- [x] Data source plugin mechanism
+- [x] Incremental data collection and incremental training
 
 ## Phase 4: Intelligence
-- [ ] Automatic alignment evaluation
+- [x] Automatic alignment evaluation
 - [ ] Training parameter auto-tuning
 - [ ] Scheduled automatic training (scheduler)
 - [ ] Web UI management interface
 
 ## Phase 5: iFay Integration
 - [ ] iFay data format adapter
-- [ ] Fayger loading protocol integration
-- [ ] Ego package distribution mechanism
+- [x] FayGer loading protocol integration
+- [x] Ego package distribution mechanism

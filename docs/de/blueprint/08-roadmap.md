@@ -9,24 +9,24 @@
 - [x] CLI-Werkzeuge (ego init / train / run)
 
 ## Phase 2: Multi-Versions-Unterstützung
-- [ ] Vier Standard-Editionen (lite/normal/plus/super)
-- [ ] Multi-Basis-Unterstützung (Qwen, Gemma, Phi)
-- [ ] Benutzerdefinierte Editionen
-- [ ] Versionsverwaltung und Rollback
+- [x] Vier Standard-Editionen (lite/normal/plus/super)
+- [x] Multi-Basis-Unterstützung (Qwen, Gemma, Phi)
+- [x] Benutzerdefinierte Editionen
+- [x] Versionsverwaltung und Rollback
 
 ## Phase 3: Datenquellen-Erweiterung
-- [ ] URL-Datenquellen-Unterstützung
-- [ ] Cloud-Speicher-Datenquellen (S3/OSS)
-- [ ] Datenquellen-Plugin-Mechanismus
-- [ ] Inkrementelle Datensammlung und inkrementelles Training
+- [x] URL-Datenquellen-Unterstützung
+- [x] Cloud-Speicher-Datenquellen (S3/OSS)
+- [x] Datenquellen-Plugin-Mechanismus
+- [x] Inkrementelle Datensammlung und inkrementelles Training
 
 ## Phase 4: Intelligenz
-- [ ] Automatische Alignment-Bewertung
+- [x] Automatische Alignment-Bewertung
 - [ ] Automatische Trainingsparameter-Optimierung
 - [ ] Geplantes automatisches Training (Scheduler)
 - [ ] Web-UI-Verwaltungsoberfläche
 
 ## Phase 5: iFay-Integration
 - [ ] iFay-Datenformat-Adapter
-- [ ] Fayger-Ladeprotokoll-Integration
-- [ ] Ego-Paket-Verteilungsmechanismus
+- [x] FayGer-Ladeprotokoll-Integration
+- [x] Ego-Paket-Verteilungsmechanismus

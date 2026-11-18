@@ -1,11 +1,11 @@
-"""Ego Pod MVP — 个性化 AI 模型训练管线。
+"""Ego Pod — 个性化 AI 模型修炼场（Dojo）与多维稀疏网格管线。
 
-本包实现 Ego 项目蓝图 Phase 1 的最小可用版本，提供 ``ego init`` /
-``ego train`` / ``ego run`` 三条命令，从本地目录数据出发，经由
-Collector → Compiler → Trainer → Vault 流水线，产出一个基于
-Qwen 3.5 0.8B + QLoRA 的 ``normal`` edition Ego 模型。
+提供 ``ego init`` / ``ego train`` / ``ego run`` / ``ego vault`` 命令，
+经由 Collector → Compiler（深层专精度网格蒸馏）→ Trainer（多规格 QLoRA）→ Vault
+（双层完整性签名与版本历史）流水线，产出可复刻人类原型（Human Prime）认知与风格的
+Ego_Package 模型资产。
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

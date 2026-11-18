@@ -68,7 +68,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ego_pod.config.schema import TrainingParams
-from ego_pod.exit_codes import TrainerError
+from ego_pod.exit_codes import OutOfMemoryTrainerError, TrainerError
 from ego_pod.trainer.base import ProgressCallback
 
 __all__ = [
@@ -76,6 +76,7 @@ __all__ = [
     "TrainingMetrics",
     "set_deterministic_seed",
     "assert_finite_loss",
+    "is_oom_error",
     "train_qlora",
 ]
 
@@ -204,20 +205,35 @@ def assert_finite_loss(loss_value: float, *, epoch: int, step: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _is_oom_error(exc: BaseException) -> bool:
-    """判定一个异常是否表示显存/内存不足（OOM）。
+def is_oom_error(exc: BaseException) -> bool:
+    """判定一个异常（或其因果链）是否表示显存/内存不足（OOM）。
 
-    覆盖 ``torch.cuda.OutOfMemoryError``（若 torch 可用）以及消息中包含
-    ``"out of memory"`` 的 :class:`RuntimeError`（CPU / 部分驱动场景），见设计
-    文档 §Error Handling「OOM 识别」。
+    覆盖 :class:`MemoryError`、:class:`~ego_pod.exit_codes.OutOfMemoryTrainerError`、
+    ``torch.cuda.OutOfMemoryError``（若 torch 可用）以及消息中包含
+    ``"out of memory"`` 的运行期/训练错误。
     """
 
+    visited: set[int] = set()
+    cur: BaseException | None = exc
     torch = _try_import_torch()
-    if torch is not None:
-        oom_type = getattr(torch.cuda, "OutOfMemoryError", None)
-        if oom_type is not None and isinstance(exc, oom_type):
+    oom_type = getattr(torch.cuda, "OutOfMemoryError", None) if torch is not None else None
+
+    while cur is not None and id(cur) not in visited:
+        visited.add(id(cur))
+        if isinstance(cur, (MemoryError, OutOfMemoryTrainerError)):
             return True
-    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+        if oom_type is not None and isinstance(cur, oom_type):
+            return True
+        msg = str(cur).lower()
+        if isinstance(cur, (RuntimeError, TrainerError)) and (
+            "out of memory" in msg or "显存/内存不足（oom）" in msg
+        ):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+_is_oom_error = is_oom_error
 
 
 def _make_batches(dataset: Any, batch_size: int, seed: int) -> list[list[Any]]:
@@ -406,7 +422,7 @@ def train_qlora(
                 raise
             except Exception as exc:  # noqa: BLE001 - 需归一化底层异常
                 if _is_oom_error(exc):
-                    raise TrainerError(
+                    raise OutOfMemoryTrainerError(
                         f"训练在 epoch={epoch_number} step={total_steps} 处显存/"
                         f"内存不足（OOM）：{exc}；训练已中止。"
                     ) from exc

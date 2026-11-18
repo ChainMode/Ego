@@ -33,7 +33,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, MutableMapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TextIO
 from urllib.parse import urlsplit
@@ -242,20 +242,23 @@ def get_active_offline_mode() -> OfflineMode | None:
     return _ACTIVE_OFFLINE_MODE
 
 
-def is_allowed_host(host: str | None) -> bool:
-    """判断主机名是否属于白名单 :data:`ALLOWED_HOSTS`（含子域名）。
-
-    比较前对主机名做大小写归一化并去除末尾的根域点 ``.``。``host`` 等于白名单
-    条目本身，或以 ``"." + 条目`` 结尾（即其子域名，如
-    ``cdn-lfs.huggingface.co``）时视为允许。``None``、空串、形如纯端口/IP 字面量
-    等无法匹配的输入一律视为不允许。
-    """
+def is_allowed_host(
+    host: str | None,
+    *,
+    extra_allowed_hosts: Sequence[str] | None = None,
+) -> bool:
+    """判断主机名是否属于白名单 :data:`ALLOWED_HOSTS` 或用户显式声明的 ``extra_allowed_hosts``。"""
     if not host:
         return False
     normalized = host.strip().lower().rstrip(".")
     if not normalized:
         return False
-    for allowed in ALLOWED_HOSTS:
+    candidates: list[str] = list(ALLOWED_HOSTS)
+    if extra_allowed_hosts:
+        for item in extra_allowed_hosts:
+            if isinstance(item, str) and item.strip():
+                candidates.append(item.strip().lower().rstrip("."))
+    for allowed in candidates:
         if normalized == allowed or normalized.endswith("." + allowed):
             return True
     return False
@@ -266,7 +269,6 @@ def _extract_host(url: str) -> str | None:
     try:
         return urlsplit(url).hostname
     except ValueError:
-        # 形如非法 IPv6 字面量等极端输入：视为无主机，交由调用方按非白名单拒绝。
         return None
 
 
@@ -274,32 +276,15 @@ def assert_request_allowed(
     url: str,
     *,
     offline: OfflineMode | None = None,
+    extra_allowed_hosts: Sequence[str] | None = None,
 ) -> None:
-    """守卫：校验对 ``url`` 的外发请求是否被允许，不允许则抛异常。
-
-    判定顺序与语义：
-
-    1. **离线模式拦截（R9-AC6）**：若处于离线模式（``offline`` 显式给出，或回退到
-       :func:`get_active_offline_mode` 注册的活动模式，其 ``enabled`` 为真），无论
-       目标 host 是否在白名单内，一律抛 :class:`NetworkBlockedError`。
-    2. **白名单拦截（R9-AC5）**：否则校验目标 host，不属于 :data:`ALLOWED_HOSTS`
-       （含子域名）时抛 :class:`NetworkBlockedError`。
-
-    校验通过则正常返回 ``None``。
-
-    参数
-    ----
-    url:
-        即将请求的目标 URL。
-    offline:
-        显式指定的离线模式状态；为 ``None`` 时回退到进程内活动离线模式。
-    """
+    """守卫：校验对 ``url`` 的外发请求是否被允许，不允许则抛 :class:`NetworkBlockedError`。"""
     mode = offline if offline is not None else get_active_offline_mode()
     if mode is not None and mode.enabled:
         raise NetworkBlockedError(NETWORK_OFFLINE_BLOCKED_MESSAGE)
 
     host = _extract_host(url)
-    if not is_allowed_host(host):
+    if not is_allowed_host(host, extra_allowed_hosts=extra_allowed_hosts):
         raise NetworkBlockedError(
             f"{NETWORK_HOST_NOT_ALLOWED_MESSAGE}: {host or url}"
         )
@@ -309,20 +294,14 @@ def guarded_get(
     url: str,
     *args: Any,
     offline: OfflineMode | None = None,
+    extra_allowed_hosts: Sequence[str] | None = None,
     requester: Callable[..., Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """对 GET 请求的薄包装：先施加隐私守卫，再委托底层发起请求。
-
-    在调用底层 HTTP 客户端前调用 :func:`assert_request_allowed`：离线模式下任何
-    外发请求被拒（R9-AC6），非白名单 host 在任何模式下被拒（R9-AC5）。守卫通过后
-    才委托 ``requester`` 实际发起请求。
-
-    ``requester`` 默认延迟导入 ``requests.get``；调用方/测试可注入自定义可调用对象
-    （签名兼容 ``requester(url, *args, **kwargs)``）。``offline`` 用于显式覆盖离线
-    状态，默认回退到进程内活动离线模式。
-    """
-    assert_request_allowed(url, offline=offline)
+    """对 GET 请求的薄包装：先施加隐私与主机白名单守卫，再委托底层发起请求。"""
+    assert_request_allowed(
+        url, offline=offline, extra_allowed_hosts=extra_allowed_hosts
+    )
     call = requester if requester is not None else _default_requester("get")
     return call(url, *args, **kwargs)
 
@@ -331,14 +310,14 @@ def guarded_post(
     url: str,
     *args: Any,
     offline: OfflineMode | None = None,
+    extra_allowed_hosts: Sequence[str] | None = None,
     requester: Callable[..., Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """对 POST 请求的薄包装，语义同 :func:`guarded_get`。
-
-    ``requester`` 默认延迟导入 ``requests.post``。
-    """
-    assert_request_allowed(url, offline=offline)
+    """对 POST 请求的薄包装，语义同 :func:`guarded_get`。"""
+    assert_request_allowed(
+        url, offline=offline, extra_allowed_hosts=extra_allowed_hosts
+    )
     call = requester if requester is not None else _default_requester("post")
     return call(url, *args, **kwargs)
 
@@ -347,15 +326,14 @@ def guarded_urlopen(
     url: str,
     *args: Any,
     offline: OfflineMode | None = None,
+    extra_allowed_hosts: Sequence[str] | None = None,
     requester: Callable[..., Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """对 ``urllib.request.urlopen`` 的薄包装，语义同 :func:`guarded_get`。
-
-    仅支持字符串 URL；守卫据其 host 判定白名单。``requester`` 默认延迟导入
-    ``urllib.request.urlopen``。
-    """
-    assert_request_allowed(url, offline=offline)
+    """对 ``urllib.request.urlopen`` 的薄包装，语义同 :func:`guarded_get`。"""
+    assert_request_allowed(
+        url, offline=offline, extra_allowed_hosts=extra_allowed_hosts
+    )
     if requester is not None:
         return requester(url, *args, **kwargs)
     from urllib.request import urlopen

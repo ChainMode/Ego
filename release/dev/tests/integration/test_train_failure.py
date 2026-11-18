@@ -68,18 +68,18 @@ def test_missing_top_level_sources_exit_2(
 def test_editions_without_normal_exit_2(
     tmp_path, make_category_dirs, write_config, run_train
 ):
-    """R3-AC6：editions 未声明 normal → 退出码 2。"""
+    """editions 为空或包含非法 Edition 名称 → 退出码 2。"""
     sources = make_category_dirs(tmp_path, {"sense": [("a.txt", "有效内容文本")]})
     write_config(
         tmp_path / "ego-config.yaml",
         sources,
-        editions={"plus": {"base": "qwen3.5-0.8B"}},
+        editions={"Bad_Edition_Name": {"base": "qwen3.5-0.8B"}},
     )
 
     rc, out, err = run_train()
 
     assert rc == EXIT_USAGE_OR_CONFIG
-    assert "MVP 仅支持 normal" in err
+    assert "Bad_Edition_Name" in err
     _assert_no_output(tmp_path)
 
 

@@ -87,6 +87,10 @@ class TrainerError(EgoError):
     """
 
 
+class OutOfMemoryTrainerError(TrainerError):
+    """训练阶段遭遇显存或内存不足（OOM），供编排层触发 batch_size 自动减半重试。"""
+
+
 class VaultError(EgoError):
     """产出持久化阶段失败。
 
@@ -113,6 +117,7 @@ __all__ = [
     "CollectorError",
     "CompilerError",
     "TrainerError",
+    "OutOfMemoryTrainerError",
     "VaultError",
     "RuntimeError_",
 ]

@@ -36,6 +36,7 @@ CLI 顶层打印到标准错误并以退出码 1 结束（与 ``collector.run`` 
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
@@ -43,13 +44,16 @@ from ego_pod.exit_codes import VaultError
 from ego_pod.trainer.cells import TrainedCell
 from ego_pod.vault.package import (
     BASE_MODEL,
+    EditionBuildInput,
     GridPackageArtifacts,
+    MultiEditionPackageArtifacts,
     PackageArtifacts,
     write_grid_package,
+    write_multi_edition_package,
     write_package,
 )
 
-__all__ = ["OUTPUT_DIRNAME", "run_vault"]
+__all__ = ["OUTPUT_DIRNAME", "run_vault", "run_multi_edition_vault"]
 
 #: Ego_Package 根目录名，落于 ``ego train`` 执行时所在的当前工作目录下（R10-AC1）。
 OUTPUT_DIRNAME = "ego-output"
@@ -291,3 +295,59 @@ def _verify_grid_artifacts(artifacts: GridPackageArtifacts) -> None:
         raise VaultError(
             "Grid_Package 产物校验失败，以下文件缺失：" + "；".join(missing)
         )
+
+
+def run_multi_edition_vault(
+    edition_builds: Sequence[EditionBuildInput],
+    *,
+    training_backend: str,
+    cwd: Path | None = None,
+    output_root: Path | None = None,
+    version: str | None = None,
+    created_at: str | None = None,
+    stdout: TextIO | None = None,
+    fidelity_report: dict | None = None,
+    include_integrity: bool = True,
+    base_model_digest: str = "unverified_offline",
+    signing_seed_hex: str | None = None,
+    signer_fay_id: str | None = None,
+    max_history: int | None = 5,
+) -> MultiEditionPackageArtifacts:
+    """执行多规格 Ego_Package 的事务性持久化、历史归档、完整性校验与路径打印。"""
+
+    target = sys.stdout if stdout is None else stdout
+    base_cwd = Path.cwd() if cwd is None else Path(cwd)
+    root = base_cwd / OUTPUT_DIRNAME if output_root is None else Path(output_root)
+
+    already_existed = root.exists()
+    root.mkdir(parents=True, exist_ok=True)
+    root_abs = root.resolve()
+    status = "already exists" if already_existed else "created"
+    print(f"[VAULT] ego-output directory {status}: {root_abs}", file=target, flush=True)
+
+    artifacts = write_multi_edition_package(
+        root,
+        edition_builds=edition_builds,
+        training_backend=training_backend,
+        version=version,
+        created_at=created_at,
+        fidelity_report=fidelity_report,
+        include_integrity=include_integrity,
+        base_model_digest=base_model_digest,
+        signing_seed_hex=signing_seed_hex,
+        signer_fay_id=signer_fay_id,
+        max_history=max_history,
+    )
+
+    required: list[Path] = [artifacts.manifest_path]
+    required.extend(artifacts.edition_configs.values())
+    for cell_map in artifacts.edition_cells.values():
+        required.extend(cell_map.values())
+    missing = [str(p) for p in required if not p.is_file()]
+    if missing:
+        raise VaultError(
+            "多规格 Ego_Package 产物校验失败，以下文件缺失：" + "；".join(missing)
+        )
+
+    print(str(artifacts.root), file=target, flush=True)
+    return artifacts

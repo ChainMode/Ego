@@ -252,7 +252,7 @@ def compute_package_integrity(
     safetensor_files: list[tuple[str, Path]] = []
     for candidate in root.rglob("*.safetensors"):
         rel_parts = candidate.relative_to(root).parts
-        if ".tmp" in rel_parts:
+        if ".tmp" in rel_parts or ".history" in rel_parts:
             continue
         if candidate.is_file() and not candidate.is_symlink():
             rel_posix = candidate.relative_to(root).as_posix()
@@ -498,11 +498,13 @@ def verify_package_signature(
                 raise VaultError(
                     f"适配器文件已被篡改（SHA-256 不匹配）：{rel_posix}"
                 )
-        # 全量校验时确保包内不存在未登记的孤儿 .safetensors 文件
+        # 全量校验时确保包内不存在未登记的孤儿 .safetensors 文件（忽略 .tmp 与 .history）
         on_disk = {
             p.relative_to(root).as_posix()
             for p in root.rglob("*.safetensors")
-            if ".tmp" not in p.relative_to(root).parts and p.is_file()
+            if ".tmp" not in p.relative_to(root).parts
+            and ".history" not in p.relative_to(root).parts
+            and p.is_file()
         }
         unlisted = sorted(on_disk - set(cell_digests.keys()))
         if unlisted:

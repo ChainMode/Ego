@@ -106,3 +106,5 @@ class GridTrainingResult:
     backend_name: str
     backend_hardware: Hardware
     backend_identifier: BackendIdentifier = "stub"
+    effective_batch_size: int | None = None
+    oom_retries: int = 0

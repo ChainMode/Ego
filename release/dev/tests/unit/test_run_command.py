@@ -151,22 +151,23 @@ def _drive_run(cwd: Path, stdin_text: str, *, edition=DEFAULT_EDITION):
 
 
 def test_non_normal_edition_raises_runtime_error(tmp_path):
+    # 未执行 ego train（无包）时传入 --edition plus → RuntimeError_（退出码 1，提示先训练且回显 plus）。
     with pytest.raises(RuntimeError_) as excinfo:
         run_repl(_make_args(edition="plus"), cwd=tmp_path, stdin=io.StringIO(""))
 
     assert excinfo.value.exit_code == EXIT_RUNTIME_FAILURE
-    # 文案应含"仅支持 normal"提示，且回显收到的非法 edition 值。
-    assert EDITION_NOT_SUPPORTED_MESSAGE in str(excinfo.value)
+    assert PACKAGE_NOT_FOUND_MESSAGE in str(excinfo.value)
     assert "plus" in str(excinfo.value)
 
 
 def test_non_normal_edition_checked_before_package_lookup(tmp_path):
-    # 即使存在有效的 normal 包，--edition lite 仍应先因 AC4 失败（不进入加载）。
+    # 包仅构建了 normal 时，请求未训练的 --edition lite 应在目录查找前按 manifest.editions 拦截。
     _make_stub_package(tmp_path)
     with pytest.raises(RuntimeError_) as excinfo:
         run_repl(_make_args(edition="lite"), cwd=tmp_path, stdin=io.StringIO(""))
     assert excinfo.value.exit_code == EXIT_RUNTIME_FAILURE
     assert EDITION_NOT_SUPPORTED_MESSAGE in str(excinfo.value)
+    assert "lite" in str(excinfo.value)
 
 
 # ===========================================================================

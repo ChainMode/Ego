@@ -162,13 +162,13 @@ def test_build_manifest_editions_multi_contains_normal():
 @pytest.mark.parametrize(
     "bad_editions",
     [
-        (),               # 空数组
-        ("plus",),        # 不含 normal
-        ("lite", "plus"),  # 不含 normal
+        (),                     # 空数组
+        ("Bad_Edition",),       # 非法规格名
+        ("lite", "lite"),       # 重复规格名
     ],
 )
 def test_build_manifest_rejects_invalid_editions(bad_editions):
-    # editions 为空或不含 normal 时抛 VaultError（R10-AC2）。
+    # editions 为空、重复或名称非法时抛 VaultError。
     with pytest.raises(VaultError):
         build_manifest(training_backend="stub", editions=bad_editions)
 
@@ -337,7 +337,7 @@ def test_write_package_rejects_invalid_editions_before_write(tmp_path: Path):
     root = tmp_path / "ego-output"
     source = _make_lora_source(tmp_path / ".ego" / "lora.safetensors")
 
-    # editions 不含 normal → 在落盘前即抛 VaultError（R10-AC2）。
+    # editions 为空或名称非法 → 在落盘前即抛 VaultError。
     with pytest.raises(VaultError):
         write_package(
             root,
@@ -345,7 +345,7 @@ def test_write_package_rejects_invalid_editions_before_write(tmp_path: Path):
             lora_rank=16,
             lora_alpha=32,
             training_backend="stub",
-            editions=("plus",),
+            editions=("Bad_Edition!",),
         )
     # 源文件未被移动，且未产出产物。
     assert source.exists()

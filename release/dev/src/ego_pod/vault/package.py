@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,12 +57,17 @@ __all__ = [
     "TMP_DIRNAME",
     "PackageArtifacts",
     "GridPackageArtifacts",
+    "EditionBuildInput",
+    "MultiEditionPackageArtifacts",
     "utc_now_iso8601",
     "build_config",
     "build_manifest",
     "write_package",
     "write_grid_package",
+    "write_multi_edition_package",
 ]
+
+_EDITION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +131,32 @@ class GridPackageArtifacts:
     #: 文件绝对路径的映射（Kernel → ``adapters/kernel.safetensors``，分区 Cell →
     #: ``adapters/<zone>/L<level>.safetensors``）。
     cell_paths: dict[CellKey, Path]
+
+
+@dataclass(frozen=True)
+class EditionBuildInput:
+    """多规格构建中单个 Edition 的待写入载荷定义。"""
+
+    edition: str
+    base_model: str
+    lora_rank: int
+    lora_alpha: int
+    max_size_mb: float | None = None
+    cells: list[TrainedCell] | None = None
+    lora_source: Path | None = None
+    effective_batch_size: int | None = None
+    oom_retries: int = 0
+
+
+@dataclass(frozen=True)
+class MultiEditionPackageArtifacts:
+    """一次多规格 :func:`write_multi_edition_package` 成功写入后的关键绝对路径集合。"""
+
+    root: Path
+    manifest_path: Path
+    editions: tuple[str, ...]
+    edition_configs: dict[str, Path]
+    edition_cells: dict[str, dict[CellKey, Path]]
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +233,16 @@ def build_manifest(
     """
 
     edition_list = list(editions)
-    if not edition_list or EDITION_NAME not in edition_list:
+    if (
+        not edition_list
+        or len(set(edition_list)) != len(edition_list)
+        or any(
+            not isinstance(e, str) or not _EDITION_NAME_RE.fullmatch(e)
+            for e in edition_list
+        )
+    ):
         raise VaultError(
-            f"manifest.editions 必须为非空数组且包含 '{EDITION_NAME}'，"
+            "manifest.editions 必须为非空、无重复且名称合法的 Edition 数组，"
             f"实际为 {edition_list!r}"
         )
 
@@ -266,16 +306,14 @@ def _atomic_replace_dir(src: Path, dst: Path) -> None:
         os.replace(src, dst)
 
 
-def _remove_orphans(root: Path) -> None:
-    """删除 ``ego-output/`` 下既非本次产物亦非暂存目录的孤儿项（需求 10.5）。
+def _remove_orphans(
+    root: Path,
+    *,
+    keep_editions: Sequence[str] = (EDITION_NAME,),
+) -> None:
+    """删除 ``ego-output/`` 下既非本次产物、暂存目录亦非 ``.history/`` 的孤儿项。"""
 
-    替换完成后，仅保留 ``manifest.json`` 与 ``normal/``；``.tmp/`` 由调用方在
-    收尾阶段清理。其余历史遗留项（上一次的孤儿文件/目录）一律删除，从而满足
-    R10-AC5「删除 ego-output/ 目录下的所有旧产物（含本次未生成的孤儿文件）」的
-    覆盖语义。
-    """
-
-    keep = {MANIFEST_FILENAME, EDITION_NAME, TMP_DIRNAME}
+    keep = {MANIFEST_FILENAME, TMP_DIRNAME, ".history", *keep_editions}
     for child in root.iterdir():
         if child.name in keep:
             continue
@@ -286,6 +324,29 @@ def _remove_orphans(root: Path) -> None:
                 child.unlink()
             except OSError:
                 pass
+
+
+def _enforce_edition_size_ceiling(
+    edition_dir: Path,
+    edition_name: str,
+    max_size_mb: float | None,
+) -> None:
+    """校验暂存区单个 Edition 子目录总体积不超过 ``max_size_mb`` 上限。"""
+
+    if max_size_mb is None or max_size_mb <= 0:
+        return
+    total_bytes = sum(
+        p.stat().st_size
+        for p in edition_dir.rglob("*")
+        if p.is_file() and not p.is_symlink()
+    )
+    limit_bytes = int(max_size_mb * 1024 * 1024)
+    if total_bytes > limit_bytes:
+        actual_mb = total_bytes / (1024 * 1024)
+        raise VaultError(
+            f"Edition '{edition_name}' 产物体积超限：当前 {actual_mb:.4f} MB > "
+            f"max_size_mb={max_size_mb} MB"
+        )
 
 
 def _resolve_signing_config(
@@ -657,4 +718,201 @@ def write_grid_package(
         manifest_path=final_manifest.resolve(),
         config_path=(final_normal / CONFIG_FILENAME).resolve(),
         cell_paths=cell_paths,
+    )
+
+
+def write_multi_edition_package(
+    output_root: str | Path,
+    *,
+    edition_builds: Sequence[EditionBuildInput],
+    training_backend: str,
+    version: str | None = None,
+    created_at: str | None = None,
+    fidelity_report: dict | None = None,
+    include_integrity: bool = False,
+    base_model_digest: str = "unverified_offline",
+    signing_seed_hex: str | None = None,
+    signer_fay_id: str | None = None,
+    max_history: int | None = 5,
+) -> MultiEditionPackageArtifacts:
+    """将一至多个已训练 Edition 事务性地写入同一个 ``ego-output/`` 模型包。
+
+    支持：
+    - 多规格共享同一份顶层 ``manifest.json``（``editions``、``grid``、``integrity``、``signature``）；
+    - 若某规格为单 Kernel 退化扁平模式且整包仅此单规格无分区 Cell，保持扁平路径兼容；
+      否则统一以网格布局写出各规格 ``<edition>/adapters/kernel.safetensors`` 与分区 Cell；
+    - 暂存就绪后逐规格校验 ``max_size_mb`` 体积上限；
+    - 原子替换前将既有合法 ``ego-output/`` 自动归档入 ``.history/<version>-<seq>/``。
+    """
+
+    from ego_pod.runtime.selection import KERNEL, CellKey
+    from ego_pod.vault.grid_descriptor import (
+        FLAT_KERNEL_RELPATH,
+        KERNEL_RELPATH,
+        build_multi_edition_grid_descriptor,
+        zone_cell_relpath,
+    )
+    from ego_pod.vault.history import archive_existing_package
+
+    if not edition_builds:
+        raise VaultError("edition_builds 不能为空序列")
+
+    edition_names = tuple(b.edition for b in edition_builds)
+    _resolve_signing_config(signing_seed_hex, signer_fay_id)
+
+    # 判断是否整包退化为单规格扁平包（以维持单 Kernel 无分区时的逐字节兼容）
+    is_degenerate_single_flat = (
+        len(edition_builds) == 1
+        and (
+            edition_builds[0].cells is None
+            or (
+                len(edition_builds[0].cells) == 1
+                and edition_builds[0].cells[0].zone is None
+                and edition_builds[0].cells[0].level == 0
+            )
+        )
+    )
+
+    planned_by_edition: dict[str, list[tuple[CellKey, Path, str]]] = {}
+    grid_cells_by_edition: dict[str, list[TrainedCell]] = {}
+    config_by_edition: dict[str, dict] = {}
+
+    for b in edition_builds:
+        cfg_dict = build_config(
+            lora_rank=b.lora_rank,
+            lora_alpha=b.lora_alpha,
+            base_model=b.base_model,
+        )
+        if b.oom_retries > 0 and b.effective_batch_size is not None:
+            cfg_dict["effective_batch_size"] = b.effective_batch_size
+            cfg_dict["oom_retries"] = b.oom_retries
+        config_by_edition[b.edition] = cfg_dict
+
+        if is_degenerate_single_flat:
+            src = (
+                b.cells[0].output_path
+                if b.cells
+                else b.lora_source
+            )
+            if src is None or not Path(src).is_file():
+                raise VaultError(
+                    f"Edition '{b.edition}' 的扁平 LoRA 权重文件不存在：{src}"
+                )
+            planned_by_edition[b.edition] = [(KERNEL, Path(src), FLAT_KERNEL_RELPATH)]
+        else:
+            cells = list(b.cells or [])
+            kernels = [c for c in cells if c.zone is None and c.level == 0]
+            if len(kernels) != 1:
+                raise VaultError(
+                    f"Edition '{b.edition}' 必须恰好包含 1 个 Kernel Cell，"
+                    f"实际找到 {len(kernels)} 个"
+                )
+            ed_plan: list[tuple[CellKey, Path, str]] = []
+            for cell in cells:
+                src_path = Path(cell.output_path)
+                if not src_path.is_file():
+                    raise VaultError(
+                        f"Edition '{b.edition}' 的 Cell 权重文件不存在：{src_path.resolve()}"
+                    )
+                if cell.zone is None and cell.level == 0:
+                    ed_plan.append((KERNEL, src_path, KERNEL_RELPATH))
+                else:
+                    ed_plan.append(
+                        (
+                            CellKey(zone=cell.zone, level=cell.level),
+                            src_path,
+                            zone_cell_relpath(str(cell.zone), cell.level),
+                        )
+                    )
+            planned_by_edition[b.edition] = ed_plan
+            grid_cells_by_edition[b.edition] = cells
+
+    primary_base = (
+        next((b.base_model for b in edition_builds if b.edition == EDITION_NAME), None)
+        or edition_builds[0].base_model
+    )
+    grid_payload = (
+        None
+        if is_degenerate_single_flat
+        else build_multi_edition_grid_descriptor(grid_cells_by_edition)
+    )
+    manifest_payload = build_manifest(
+        training_backend=training_backend,
+        base_model=primary_base,
+        editions=edition_names,
+        version=version,
+        created_at=created_at,
+        grid=grid_payload,
+        fidelity_report=fidelity_report,
+    )
+
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = root / TMP_DIRNAME
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    final_manifest = root / MANIFEST_FILENAME
+    archived_snapshot = None
+
+    try:
+        for b in edition_builds:
+            tmp_ed = tmp_dir / b.edition
+            tmp_ed.mkdir(parents=True, exist_ok=True)
+            _write_json(tmp_ed / CONFIG_FILENAME, config_by_edition[b.edition])
+            for _key, src_file, relpath in planned_by_edition[b.edition]:
+                dest = tmp_ed / relpath
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src_file), str(dest))
+            _enforce_edition_size_ceiling(tmp_ed, b.edition, b.max_size_mb)
+
+        manifest_payload = _finalize_manifest_in_staging(
+            tmp_dir,
+            manifest_payload,
+            include_integrity=include_integrity,
+            base_model_digest=base_model_digest,
+            signing_seed_hex=signing_seed_hex,
+            signer_fay_id=signer_fay_id,
+        )
+        tmp_manifest = tmp_dir / MANIFEST_FILENAME
+        _write_json(tmp_manifest, manifest_payload)
+
+        # 暂存完全成功后、覆盖旧产物前，将既有有效包归档入 .history/
+        if max_history is not None and final_manifest.is_file():
+            archived_snapshot = archive_existing_package(root, max_history=max_history)
+
+        for b in edition_builds:
+            _atomic_replace_dir(tmp_dir / b.edition, root / b.edition)
+        os.replace(tmp_manifest, final_manifest)
+        _remove_orphans(root, keep_editions=edition_names)
+    except EgoError:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if archived_snapshot is not None:
+            shutil.rmtree(archived_snapshot.path, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if archived_snapshot is not None:
+            shutil.rmtree(archived_snapshot.path, ignore_errors=True)
+        failed_path = getattr(exc, "filename", None) or tmp_dir
+        raise VaultError(
+            f"写入多规格 Ego_Package 失败：{Path(failed_path).resolve()}；原因：{exc}"
+        ) from exc
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    edition_configs = {
+        ed: (root / ed / CONFIG_FILENAME).resolve() for ed in edition_names
+    }
+    edition_cells = {
+        ed: {
+            key: (root / ed / relpath).resolve()
+            for key, _src, relpath in planned_by_edition[ed]
+        }
+        for ed in edition_names
+    }
+    return MultiEditionPackageArtifacts(
+        root=root.resolve(),
+        manifest_path=final_manifest.resolve(),
+        editions=edition_names,
+        edition_configs=edition_configs,
+        edition_cells=edition_cells,
     )

@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, TextIO, cast
@@ -91,7 +91,9 @@ from ego_pod.compiler.routing import (
     resolve_zone_config,
     route_cells,
 )
+from ego_pod.compiler.specificity import NullFieldStats
 from ego_pod.exit_codes import CompilerError
+from ego_pod.fidelity.metrics import split_holdout_deterministic
 from ego_pod.logging_io import print_summary
 
 if TYPE_CHECKING:
@@ -422,10 +424,30 @@ def _grid_summary_line(cells: Iterable[CellSubDataset]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _select_leakage_free_fit_samples(
+    samples: Sequence[SampleCandidate],
+) -> list[SampleCandidate]:
+    """按确定性留出集切分提取仅属于训练子集的样本，杜绝留出集向专精度分位数泄漏。"""
+
+    if len(samples) < 8:
+        return list(samples)
+    indexed_records = [
+        {**sample_to_dict(sample), "_idx": idx}
+        for idx, sample in enumerate(samples)
+    ]
+    train_records, holdout_records = split_holdout_deterministic(indexed_records)
+    if not holdout_records:
+        return list(samples)
+    return [samples[int(rec["_idx"])] for rec in train_records]
+
+
 def run_compilation(
     files: Iterable["CollectedFile"],
     *,
     zone_config: "ZoneConfig | None" = None,
+    default_max_level: int = 1,
+    fit_samples: Sequence[SampleCandidate] | None = None,
+    precomputed_source_samples: tuple[list[SourceSample], RedactCounters] | None = None,
     cwd: Path | None = None,
     output_path: Path | None = None,
     stdout: TextIO | None = None,
@@ -470,8 +492,11 @@ def run_compilation(
     )
     err = sys.stderr if stderr is None else stderr
 
-    # 1. read → redact → normalize（R5）。
-    source_samples, redact_counters = read_source_samples(files)
+    # 1. read → redact → normalize（R5；增量模式下支持复用缓存源样本）。
+    if precomputed_source_samples is not None:
+        source_samples, redact_counters = precomputed_source_samples
+    else:
+        source_samples, redact_counters = read_source_samples(files)
     _print_redact_summary(redact_counters, stream=stdout)
 
     # 2. classify（R6）：套模板转换为 instruction/output 候选样本并丢弃非法样本。
@@ -493,14 +518,28 @@ def run_compilation(
     final_samples, augment_stats = augment_samples(filtered)
     print_summary(augment_stats.summary_line(), stream=stdout)
 
-    # 6. 按 Cell 路由（R2-AC1/AC8）：纯函数划分发生在全部既有加工阶段之后，不改变
-    #    既有语料加工语义。为每个非空 Cell 写出 Cell_Sub_Dataset（复用既有序列化器，
-    #    R2-AC4/AC5），并打印一行网格摘要（R2-AC6）。
-    resolved = resolve_zone_config(zone_config)
-    routed = route_cells(final_samples, resolved)
-    cells = _write_cell_sub_datasets(
-        routed, base_cwd / EGO_DIR_NAME / CELLS_DIR_NAME
+    # 6. 按 Cell 路由（R2-AC1/AC8 + ADR 0005 深层专精度蒸馏）：
+    #    当 resolved.max_level >= 2 时，先用确定性留出集切分提取训练子集拟合词表 IDF
+    #    与分位数，保证评估留出集零泄漏。每次写出前清空旧 .ego/cells 目录防残留孤儿文件。
+    resolved = resolve_zone_config(
+        zone_config, default_max_level=default_max_level
     )
+    basis_samples = fit_samples
+    if basis_samples is None and resolved.max_level >= 2:
+        basis_samples = _select_leakage_free_fit_samples(final_samples)
+    null_stats = NullFieldStats()
+    routed = route_cells(
+        final_samples,
+        resolved,
+        fit_samples=basis_samples,
+        null_stats=null_stats,
+    )
+    cells_dir = base_cwd / EGO_DIR_NAME / CELLS_DIR_NAME
+    if cells_dir.exists():
+        import shutil
+
+        shutil.rmtree(cells_dir)
+    cells = _write_cell_sub_datasets(routed, cells_dir)
     print_summary(_grid_summary_line(cells), stream=stdout)
 
     # 7. 写扁平 JSONL 到 {cwd}/.ego/corpus.jsonl（R6-AC4/AC5、R9-AC3/AC8）。保留全体

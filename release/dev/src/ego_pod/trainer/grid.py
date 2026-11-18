@@ -58,6 +58,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TextIO
 
@@ -68,12 +69,13 @@ from ego_pod.privacy.offline import OfflineMode, get_active_offline_mode
 from ego_pod.trainer.base import TrainingBackend, resolve_identifier
 from ego_pod.trainer.cells import CellSpec, GridTrainingResult, TrainedCell
 from ego_pod.trainer.detect import detect_backend
-from ego_pod.trainer.loop import set_deterministic_seed
+from ego_pod.trainer.loop import is_oom_error, set_deterministic_seed
 
 # 复用 run_training 既有的装配逻辑/常量，避免在网格路径重复实现（R6-AC5、R8-AC9、
 # R9-AC7 与单适配器路径逐字一致）。
 from ego_pod.trainer.pipeline import (
     DEFAULT_MODEL_ID,
+    MAX_OOM_RETRIES,
     _base_model_available,
     _validate_training_params,
     make_progress_callback,
@@ -175,6 +177,7 @@ def run_grid_training(
     *,
     model_id: str = DEFAULT_MODEL_ID,
     cwd: Path | None = None,
+    cells_out_dir: Path | None = None,
     backend: TrainingBackend | None = None,
     offline: OfflineMode | None = None,
     base_model_available_check=None,
@@ -209,7 +212,11 @@ def run_grid_training(
     """
 
     base_cwd = Path.cwd() if cwd is None else Path(cwd)
-    cells_out_root = base_cwd / EGO_DIR_NAME / CELLS_OUT_DIR_NAME
+    cells_out_root = (
+        base_cwd / EGO_DIR_NAME / CELLS_OUT_DIR_NAME
+        if cells_out_dir is None
+        else Path(cells_out_dir)
+    )
 
     # 1. 探测后端并打印所选后端（复用 run_training 逻辑，R6-AC5 / R8-AC2）。
     selected = backend if backend is not None else detect_backend()
@@ -233,14 +240,15 @@ def run_grid_training(
     # 4. 排序为训练顺序：Kernel 优先，再各分区 Level 升序（R3-AC2）。
     ordered_cells = sorted(cells, key=_training_order_key)
 
-    # 5. 逐 Cell 训练；进度回调复用 run_training 的固定格式记录（R8-AC8）。
+    # 5. 逐 Cell 训练；支持 OOM 自动 batch_size 减半重试最多 MAX_OOM_RETRIES 次。
     progress_callback = make_progress_callback(stream=stdout)
     trained: list[TrainedCell] = []
+    effective_bs = params.batch_size
+    total_oom_retries = 0
 
     for cell in ordered_cells:
         label = _cell_label(cell)
 
-        # 空 Cell：跳过并记录标识与原因，不产出文件（R3-AC6）。
         if _sub_dataset_is_empty(cell.sub_dataset_path):
             print_summary(
                 f"Skipping empty cell {label}: Cell_Sub_Dataset 为空，"
@@ -250,33 +258,52 @@ def run_grid_training(
             continue
 
         cell_output = _cell_output_path(cells_out_root, cell)
+        cell_retries = 0
+        cell_bs = effective_bs
 
-        # fresh-load-per-cell 隔离（R3-AC1/AC3）：每 Cell 独立加载冻结 Base_Model，
-        # 训练前以固定种子重置随机源（R3-AC5），训练并仅导出适配器张量（R3-AC4）。
-        try:
-            set_deterministic_seed(_SEED)
-            model = selected.load_base_model(model_id, params.quantization)
-            selected.train(model, cell.sub_dataset_path, params, progress_callback)
-            cell_output.parent.mkdir(parents=True, exist_ok=True)
-            selected.export_lora_safetensors(model, cell_output)
-        except TrainerError as exc:
-            # 计算错误（OOM/NaN/Inf）或基座加载失败已是受控 TrainerError：重抛并
-            # 在消息中附上失败 Cell 标识（R3-AC7），保持退出码 1 语义不变。
-            raise TrainerError(f"Cell {label} 训练失败：{exc}") from exc
-        except EgoError:
-            # 其它受控错误（如离线缺权重）原样上抛，保持各自退出码语义不被覆盖。
-            raise
-        except Exception as exc:  # noqa: BLE001 - 归一化未受控底层异常
-            raise TrainerError(f"Cell {label} 训练失败：{exc}") from exc
+        while True:
+            try:
+                set_deterministic_seed(_SEED)
+                model = selected.load_base_model(model_id, params.quantization)
+                attempt_params = replace(params, batch_size=cell_bs)
+                selected.train(
+                    model, cell.sub_dataset_path, attempt_params, progress_callback
+                )
+                cell_output.parent.mkdir(parents=True, exist_ok=True)
+                selected.export_lora_safetensors(model, cell_output)
+                effective_bs = min(effective_bs, cell_bs)
+                total_oom_retries += cell_retries
+                break
+            except Exception as exc:  # noqa: BLE001
+                if is_oom_error(exc):
+                    if cell_retries < MAX_OOM_RETRIES and cell_bs > 1:
+                        next_bs = max(1, cell_bs // 2)
+                        cell_retries += 1
+                        print_summary(
+                            f"[Cell {label}] [OOM retry {cell_retries}/{MAX_OOM_RETRIES}] "
+                            f"显存/内存不足，batch_size 自动减半：{cell_bs} -> {next_bs}",
+                            stream=stdout,
+                        )
+                        cell_bs = next_bs
+                        continue
+                    raise TrainerError(
+                        f"Cell {label} 训练失败（OOM 重试 {cell_retries} 次后耗尽）：{exc}"
+                    ) from exc
+                if isinstance(exc, TrainerError):
+                    raise TrainerError(f"Cell {label} 训练失败：{exc}") from exc
+                if isinstance(exc, EgoError):
+                    raise
+                raise TrainerError(f"Cell {label} 训练失败：{exc}") from exc
 
         trained.append(
             TrainedCell(zone=cell.zone, level=cell.level, output_path=cell_output)
         )
 
-    # 6. 汇总：每个已训练 Cell 的 (zone, level, output_path) + 所选后端信息（R3-AC8）。
     return GridTrainingResult(
         cells=tuple(trained),
         backend_name=selected.name,
         backend_hardware=selected.hardware,
         backend_identifier=resolve_identifier(selected),
+        effective_batch_size=effective_bs,
+        oom_retries=total_oom_retries,
     )

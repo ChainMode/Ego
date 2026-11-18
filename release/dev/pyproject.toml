@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ego-pod"
-description = "Ego Pod MVP — 开箱即用、全自动、隐私优先的个性化 AI 模型训练管线"
+description = "Ego Pod v0.2 — 本地隐私优先的多规格深层稀疏网格个性化 AI 模型修炼管线"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

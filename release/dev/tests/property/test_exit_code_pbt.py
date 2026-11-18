@@ -231,10 +231,10 @@ def test_main_passes_through_dispatch_code(command: str, code: int) -> None:
 # argparse 用法错误：未知子命令 / 未知参数 → SystemExit(2)
 # ===========================================================================
 
-#: 未知子命令：小写字母串，排除三个合法子命令名。
+#: 未知子命令：小写字母串，排除合法子命令名（含 v0.2 新增的 vault）。
 _unknown_subcommand = st.text(
     alphabet=string.ascii_lowercase, min_size=1, max_size=15
-).filter(lambda s: s not in set(_SUBCOMMANDS))
+).filter(lambda s: s not in (set(_SUBCOMMANDS) | {"vault"}))
 
 
 @given(sub=_unknown_subcommand)

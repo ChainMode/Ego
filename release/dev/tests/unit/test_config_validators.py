@@ -146,11 +146,12 @@ def test_top_level_order_reports_training_before_editions():
 
 
 def test_missing_normal_edition():
+    # v0.2 支持多规格，空 editions 或非法 Edition 名称必须被拒绝。
     data = _valid_mapping()
-    data["editions"] = {"lite": {"base": "qwen3.5-0.8B"}}
+    data["editions"] = {}
     with pytest.raises(ConfigError) as exc:
         validate(data, CONFIG_PATH)
-    assert "normal" in str(exc.value)
+    assert "editions" in str(exc.value)
     assert exc.value.exit_code == EXIT_USAGE_OR_CONFIG
 
 
@@ -261,13 +262,13 @@ def test_bool_not_accepted_as_positive_int():
 
 
 def test_short_circuit_ac6_before_ac9():
-    # 同时违反 AC6（无 normal）与 AC9（method 非 qlora）→ 报告 AC6。
+    # 同时违反 AC6（editions 为空/非法）与 AC9（method 非 qlora）→ 报告 AC6。
     data = _valid_mapping()
-    data["editions"] = {"lite": {"base": "qwen3.5-0.8B"}}
+    data["editions"] = {"Bad_Edition": {"base": "qwen3.5-0.8B"}}
     data["training"]["method"] = "full"
     with pytest.raises(ConfigError) as exc:
         validate(data, CONFIG_PATH)
-    assert "normal" in str(exc.value)
+    assert "Bad_Edition" in str(exc.value)
     assert "qlora" not in str(exc.value)
 
 
@@ -317,7 +318,7 @@ def _broken_mappings() -> list[dict]:
     cases.append(m)  # AC5
 
     m = _valid_mapping()
-    m["editions"] = {"lite": {"base": "qwen3.5-0.8B"}}
+    m["editions"] = {}
     cases.append(m)  # AC6
 
     m = _valid_mapping()
