@@ -1,6 +1,6 @@
 """``ego`` 命令行入口：argparse 解析、子命令分发与离线模式装配。
 
-提供四个顶层子命令：``init`` / ``train`` / ``run`` / ``vault``。
+提供七个顶层子命令：``init`` / ``train`` / ``run`` / ``serve`` / ``slice`` / ``school`` / ``vault``。
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Ego Pod —— 本地、隐私优先的个性化 AI 模型修炼场（Dojo）。"
-            "提供 init / train / run / vault 命令。"
+            "Ego Pod —— 本地、隐私优先的个性化 AI 模型修炼场与认知服务。"
+            "提供 init / train / run / serve / slice / school / vault 命令。"
         ),
     )
     parser.add_argument(
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="command",
         title="子命令",
-        metavar="{init,train,run,vault}",
+        metavar="{init,train,run,serve,slice,school,vault}",
         help="要执行的操作",
     )
 
@@ -164,6 +164,181 @@ def build_parser() -> argparse.ArgumentParser:
         help="确认删除全部 ego-output/ 与 .ego/ 本地数据",
     )
 
+    # --- ego serve --------------------------------------------------------
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="启动快慢双系统三合一本地认知服务（HTTP JSON API）",
+        description=(
+            "验签加载 .egopod（或工作区 ego-output/）并启动三合一本地认知服务："
+            "/health、/v1/intuition、/v1/dynamic-context、/v1/guard-rewrite。"
+        ),
+    )
+    serve_parser.add_argument(
+        "package_or_workspace",
+        nargs="?",
+        default=".",
+        help="目标 .egopod 模型包目录或包含 ego-output/ 的工作区目录（默认当前目录）",
+    )
+    serve_parser.add_argument(
+        "--edition",
+        metavar="NAME",
+        default=None,
+        help="要加载的 Edition 名称（默认优先 normal，单规格切片包自动匹配）",
+    )
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP 监听地址（默认 127.0.0.1）",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=7980,
+        help="HTTP 监听端口（默认 7980；传 0 自动分配临时空闲端口）",
+    )
+    serve_parser.add_argument(
+        "--zone",
+        metavar="ZONE:DEPTH",
+        action="append",
+        default=None,
+        help="按需激活指定功能分区及深度（可重复指定，如 --zone coding:2）",
+    )
+    serve_parser.add_argument(
+        "--kernel-only",
+        action="store_true",
+        help="仅加载共享 Kernel（Level-0），与 --zone 互斥",
+    )
+    serve_parser.add_argument(
+        "--allow-unsigned-dev",
+        action="store_true",
+        help="显式允许在本地开发调试期挂载未签名的开发包（篡改包仍一律拒绝）",
+    )
+    serve_parser.add_argument(
+        "--trusted-public-key-hex",
+        default=None,
+        help="可选：要求签名公钥严格匹配指定的 64 位十六进制 Ed25519 公钥",
+    )
+
+    # --- ego slice --------------------------------------------------------
+    slice_parser = subparsers.add_parser(
+        "slice",
+        help="按场景/领域与体积上限导出独立可验签的微型 .egopod 子模型切片",
+        description=(
+            "提取 Kernel + 指定领域 Cell，按体积上限裁剪并嵌入 ego-submodel-slice/1.0 "
+            "描述符后完成 Ed25519 独立签名。"
+        ),
+    )
+    slice_parser.add_argument(
+        "source_package",
+        help="源 .egopod 模型包目录（或含 ego-output/ 的工作区目录）",
+    )
+    slice_parser.add_argument(
+        "--domain",
+        action="append",
+        required=True,
+        help=(
+            "目标切片领域（支持 coding|social|knowledge|creative|sense|drone-photo "
+            "或自定义分区名；可重复指定或逗号分隔）"
+        ),
+    )
+    slice_parser.add_argument(
+        "--out",
+        required=True,
+        help="导出独立微型 .egopod 切片的目标目录路径",
+    )
+    slice_parser.add_argument(
+        "--max-size-mb",
+        type=float,
+        default=None,
+        help="切片包最大允许体积上限（MB）；超限时自动削减深层 Cell",
+    )
+    slice_parser.add_argument(
+        "--signing-key",
+        required=True,
+        help="用于签发独立切片的密钥（64 位 hex 种子、subkey:<hex> 或密钥文件路径）",
+    )
+    slice_parser.add_argument(
+        "--signer-fay-id",
+        default=None,
+        help="可选：显式指定签名者规范 FayID（ifay_...）；省略时继承源包或从公钥确定性派生",
+    )
+    slice_parser.add_argument(
+        "--edition",
+        default=None,
+        help="可选：指定从源包哪个 Edition 提取切片",
+    )
+    slice_parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        help="可选：限制每个保留分区的最大网格深度",
+    )
+    slice_parser.add_argument(
+        "--target-device-class",
+        default=None,
+        help="可选：目标受限设备类型标识（如 drone-camera / wearable-sensor）",
+    )
+
+    # --- ego school -------------------------------------------------------
+    school_parser = subparsers.add_parser(
+        "school",
+        help="Ego School：冷启动对话/账本脱敏导入与伴生增量蒸馏进化",
+        description="导入人类原型自有表达与纠偏瞬间（import），或运行伴生增量修炼闭环（evolve）。",
+    )
+    school_sub = school_parser.add_subparsers(
+        dest="school_action",
+        required=True,
+        metavar="{import,evolve}",
+        help="Ego School 动作",
+    )
+    imp_parser = school_sub.add_parser(
+        "import",
+        help="冷启动导入历史笔记、对话或主体纠偏账本（仅提取人类原型发言与纠偏对并自动脱敏）",
+    )
+    imp_parser.add_argument(
+        "--format",
+        choices=("markdown", "jsonl", "openai", "ifay-ledger"),
+        required=True,
+        help="导入数据源格式",
+    )
+    imp_parser.add_argument(
+        "--input",
+        required=True,
+        help="输入文件或目录路径",
+    )
+    imp_parser.add_argument(
+        "--workspace",
+        default=".",
+        help="目标 Ego 工作区目录（默认当前目录）",
+    )
+
+    evo_parser = school_sub.add_parser(
+        "evolve",
+        help="执行伴生增量蒸馏：吸收新回流纠偏账本 -> 增量训练与归档 -> 一致性探针晋升",
+    )
+    evo_parser.add_argument(
+        "workspace",
+        nargs="?",
+        default=".",
+        help="目标 Ego 工作区目录（默认当前目录）",
+    )
+    evo_parser.add_argument(
+        "--ledger",
+        default=None,
+        help="可选：iFay 主体回流事件账本路径（如 primary_body_events.jsonl）",
+    )
+    evo_parser.add_argument(
+        "--config",
+        default=None,
+        help="可选：自定义 ego-config.yaml 路径",
+    )
+    evo_parser.add_argument(
+        "--min-consistency",
+        type=float,
+        default=0.70,
+        help="晋升所需最低一致性/偏好探针门限（默认 0.70；不达标自动回滚）",
+    )
+
     return parser
 
 
@@ -184,6 +359,18 @@ def _dispatch(args: argparse.Namespace) -> int:
         from ego_pod.commands.vault_cmd import run_vault_cmd
 
         return run_vault_cmd(args)
+    if args.command == "serve":
+        from ego_pod.commands.serve import run_serve_cmd
+
+        return run_serve_cmd(args)
+    if args.command == "slice":
+        from ego_pod.commands.slice_cmd import run_slice_cmd
+
+        return run_slice_cmd(args)
+    if args.command == "school":
+        from ego_pod.commands.school import run_school_cmd
+
+        return run_school_cmd(args)
 
     raise AssertionError(f"未知子命令: {args.command!r}")
 

@@ -403,6 +403,7 @@ def verify_package_signature(
 
     sig_obj = manifest.get("signature")
     if sig_obj is None:
+        _verify_optional_manifest_extensions(root, manifest)
         if trusted_public_key_hex is None:
             return SignatureVerificationResult(status="unsigned")
         raise VaultError(
@@ -522,6 +523,8 @@ def verify_package_signature(
             )
         verified = tuple(cell_digests.keys())
 
+    _verify_optional_manifest_extensions(root, manifest)
+
     return SignatureVerificationResult(
         status="verified",
         signer_fay_id=signer_fay_id,
@@ -530,3 +533,33 @@ def verify_package_signature(
         payload_jcs_sha256=actual_jcs_sha256,
         verified_cells=verified,
     )
+
+
+def _verify_optional_manifest_extensions(
+    root: Path, manifest: Mapping[str, Any]
+) -> None:
+    """校验可选的 ``slice_descriptor`` 协议字段与 ``cognitive_profile.json`` 摘要完整性。"""
+
+    if "slice_descriptor" in manifest and manifest["slice_descriptor"] is not None:
+        from ego_pod.vault.submodel_slice import validate_slice_descriptor
+
+        validate_slice_descriptor(manifest["slice_descriptor"])
+
+    expected_prof_sha = manifest.get("cognitive_profile_sha256")
+    if expected_prof_sha is not None:
+        if not isinstance(expected_prof_sha, str) or not _SHA256_DIGEST_RE.match(
+            expected_prof_sha
+        ):
+            raise VaultError(
+                f"manifest.cognitive_profile_sha256 格式非法：{expected_prof_sha!r}"
+            )
+        prof_path = root / "cognitive_profile.json"
+        if not prof_path.is_file():
+            raise VaultError(
+                f"manifest 声明了 cognitive_profile_sha256，但文件缺失：{prof_path}"
+            )
+        actual_prof_sha = _sha256_file_prefixed(prof_path)
+        if actual_prof_sha != expected_prof_sha:
+            raise VaultError(
+                "cognitive_profile.json 已被篡改（SHA-256 不匹配）"
+            )

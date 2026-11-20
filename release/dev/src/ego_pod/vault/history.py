@@ -146,6 +146,9 @@ def archive_existing_package(
     try:
         staging.mkdir(parents=True, exist_ok=True)
         shutil.copy2(manifest_path, staging / "manifest.json")
+        prof_file = root / "cognitive_profile.json"
+        if prof_file.is_file() and not prof_file.is_symlink():
+            shutil.copy2(prof_file, staging / "cognitive_profile.json")
         for child in root.iterdir():
             if (
                 child.name in skip_names
@@ -274,6 +277,11 @@ def rollback_vault_snapshot(
     try:
         staging.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snap_dir / "manifest.json", staging / "manifest.json")
+        has_snap_profile = (snap_dir / "cognitive_profile.json").is_file()
+        if has_snap_profile:
+            shutil.copy2(
+                snap_dir / "cognitive_profile.json", staging / "cognitive_profile.json"
+            )
         for ed in editions:
             shutil.copytree(snap_dir / ed, staging / ed)
 
@@ -287,6 +295,11 @@ def rollback_vault_snapshot(
         for ed in editions:
             os.replace(staging / ed, root / ed)
             placed_from_staging.append(ed)
+        if has_snap_profile:
+            os.replace(
+                staging / "cognitive_profile.json", root / "cognitive_profile.json"
+            )
+            placed_from_staging.append("cognitive_profile.json")
         os.replace(staging / "manifest.json", root / "manifest.json")
         placed_from_staging.append("manifest.json")
 

@@ -24,6 +24,16 @@ ego train
 # 3. Chat locally with full Sparse Grid or selective zone depth
 ego run --edition normal
 ego run --edition normal --zone coding:1 --kernel-only
+
+# 4. Launch 3-in-1 Local Cognitive Service (Intuition + Dynamic Context + Guard Rewrite)
+ego serve ./ego-output --edition normal --host 127.0.0.1 --port 7980
+
+# 5. Export a size-bounded standalone sub-model slice for constrained FayGer hosts
+ego slice ./ego-output --domain drone-photo --out ./drone-slice --max-size-mb 16 --signing-key "$EGO_SIGNING_SEED_HEX"
+
+# 6. Cold-start import & companion incremental distillation (Ego School)
+ego school import --format openai --input ./conversations.json --workspace .
+ego school evolve . --ledger ./primary_body_events.jsonl
 ```
 
 - **CLI Reference & Architecture**: [release/dev/README.md](./release/dev/README.md)
@@ -39,6 +49,9 @@ ego run --edition normal --zone coding:1 --kernel-only
 - **Pluggable & Incremental Data Sources**: Local directories, allowlist-guarded HTTPS URLs with ETag/Range resume, environment-credentialed S3/OSS buckets, Python `entry_points` (`ego_pod.collectors`) plugins, and `ego train --update` content-SHA-256 incremental compilation.
 - **Versioned & Signed Vault**: Two-tier package integrity (`cell_digests` SHA-256 + RFC 8785 JCS Ed25519 signature via `ifay_` FayID `HKDF-SHA256` subkey), post-training `cell_consistency_score` probing, `.history/` snapshot retention, and verified rollback (`ego vault list | rollback | purge`).
 - **On-Demand Runtime Activation**: Selective zone and depth loading via `ego run --edition <name> --zone <zone>:<depth>` or `ego run --kernel-only`.
+- **3-in-1 Local Cognitive Service (`ego serve` & `EgoCognitiveEngine`)**: Zero-dependency stdlib `ThreadingHTTPServer` JSON API verifying `Ed25519` bundle provenance on startup and serving `<20ms` System-1 fast intuition (`POST /v1/intuition`), external System-2 persona steering (`POST /v1/dynamic-context`), and post-generation redline/PII/tone auditing (`POST /v1/guard-rewrite`), plus `GET /health`.
+- **Standalone Sub-Model Slicing (`ego slice`, `ego-submodel-slice/1.0`)**: Prunes a parent `.egopod` down to `Kernel` + target domain cells (`coding`, `social`, `knowledge`, `creative`, `sense`, `drone-photo`, or custom zones) within `--max-size-mb`, recomputes `cell_digests`, embeds `slice_descriptor`, and signs a standalone runnable `.egopod` for constrained `FayGer` edge devices.
+- **`Ego School` Cold-Start & Companion Evolution (`ego school`)**: Scrubs PII/secrets automatically while extracting **Human Prime**-authored turns and high-weight `human_correction` pairs from Markdown, JSONL, OpenAI `conversations.json`, and `iFay` Primary Body ledgers (`ego school import`), then runs consistency-gated incremental Dojo updates with automatic Vault snapshot archival and rollback (`ego school evolve`).
 
 ## Governance & Security
 

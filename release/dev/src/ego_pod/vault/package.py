@@ -65,6 +65,7 @@ __all__ = [
     "write_package",
     "write_grid_package",
     "refresh_manifest_fidelity",
+    "attach_cognitive_profile_to_package",
     "write_multi_edition_package",
 ]
 
@@ -214,6 +215,8 @@ def build_manifest(
     fidelity_report: dict | None = None,
     integrity: dict | None = None,
     signature: dict | None = None,
+    slice_descriptor: dict | None = None,
+    cognitive_profile_sha256: str | None = None,
 ) -> dict:
     """构造 ``manifest.json`` 的内容字典（需求 10.2、12.9、R4-AC4、Wave 2 契约）。
 
@@ -268,6 +271,19 @@ def build_manifest(
         payload["fidelity_report"] = fidelity_report
     if integrity is not None:
         payload["integrity"] = integrity
+    if slice_descriptor is not None:
+        from ego_pod.vault.submodel_slice import validate_slice_descriptor
+
+        validate_slice_descriptor(slice_descriptor)
+        payload["slice_descriptor"] = slice_descriptor
+    if cognitive_profile_sha256 is not None:
+        if not isinstance(cognitive_profile_sha256, str) or not re.match(
+            r"^sha256:[0-9a-f]{64}$", cognitive_profile_sha256
+        ):
+            raise VaultError(
+                "manifest.cognitive_profile_sha256 必须为 'sha256:<64-lowercase-hex>'"
+            )
+        payload["cognitive_profile_sha256"] = cognitive_profile_sha256
     if signature is not None:
         payload["signature"] = signature
     return payload
@@ -315,6 +331,16 @@ def _remove_orphans(
     """删除 ``ego-output/`` 下既非本次产物、暂存目录亦非 ``.history/`` 的孤儿项。"""
 
     keep = {MANIFEST_FILENAME, TMP_DIRNAME, ".history", *keep_editions}
+    manifest_file = root / MANIFEST_FILENAME
+    if manifest_file.is_file():
+        try:
+            manifest_obj = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if isinstance(manifest_obj, dict) and manifest_obj.get(
+                "cognitive_profile_sha256"
+            ):
+                keep.add("cognitive_profile.json")
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            pass
     for child in root.iterdir():
         if child.name in keep:
             continue
@@ -440,6 +466,66 @@ def refresh_manifest_fidelity(
 
     if was_signed:
         seed, fay_id = _resolve_signing_config(signing_seed_hex, signer_fay_id)
+        if seed is None or fay_id is None:
+            raise VaultError(
+                "包已签名，但重新签名所需的 EGO_SIGNING_SEED_HEX / EGO_SIGNER_FAY_ID 不可用"
+            )
+        updated = sign_manifest(updated, signer_fay_id=fay_id, master_seed=seed)
+
+    tmp_path = manifest_path.with_suffix(".json.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(updated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp_path, manifest_path)
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise VaultError(f"写入 manifest.json 失败：{manifest_path}；{exc}") from exc
+    return manifest_path
+
+
+def attach_cognitive_profile_to_package(
+    output_root: str | Path,
+    profile: object,
+    *,
+    fidelity_report: dict | None = None,
+    signing_seed_hex: str | None = None,
+    signer_fay_id: str | None = None,
+) -> Path:
+    """向已构建的 ``Ego_Package`` 原子写入 ``cognitive_profile.json`` 并同步更新签名。"""
+
+    from ego_pod.fidelity.metrics import validate_fidelity_report
+    from ego_pod.service.profile import (
+        COGNITIVE_PROFILE_FILENAME,
+        CognitiveProfile,
+        write_cognitive_profile,
+    )
+    from ego_pod.vault.signing import sign_manifest
+
+    if not (
+        isinstance(profile, CognitiveProfile)
+        or (hasattr(profile, "schema_version") and hasattr(profile, "redlines"))
+    ):
+        raise VaultError("profile 必须为 CognitiveProfile 实例")
+
+    root = Path(output_root)
+    manifest_path = root / MANIFEST_FILENAME
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise VaultError(f"读取 manifest.json 失败：{manifest_path}；{exc}") from exc
+
+    profile_sha = write_cognitive_profile(root / COGNITIVE_PROFILE_FILENAME, profile)
+
+    was_signed = isinstance(manifest.get("signature"), dict)
+    seed, fay_id = _resolve_signing_config(signing_seed_hex, signer_fay_id)
+    updated = {k: v for k, v in manifest.items() if k != "signature"}
+    updated["cognitive_profile_sha256"] = profile_sha
+    if fidelity_report is not None:
+        validate_fidelity_report(fidelity_report)
+        updated["fidelity_report"] = dict(fidelity_report)
+
+    if was_signed or (seed is not None and fay_id is not None):
         if seed is None or fay_id is None:
             raise VaultError(
                 "包已签名，但重新签名所需的 EGO_SIGNING_SEED_HEX / EGO_SIGNER_FAY_ID 不可用"
