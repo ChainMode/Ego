@@ -358,8 +358,9 @@ def _parse_openai_conversations(input_path: Path) -> tuple[list[dict[str, Any]],
 
 
 def _parse_ifay_ledger(input_path: Path) -> tuple[list[dict[str, Any]], int]:
+    target_path = input_path / "ledger.json" if input_path.is_dir() and (input_path / "ledger.json").is_file() else input_path
     try:
-        raw_text = input_path.read_text(encoding="utf-8").strip()
+        raw_text = target_path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise CollectorError(f"读取 iFay 账本文件失败：{exc}") from exc
 
@@ -368,7 +369,17 @@ def _parse_ifay_ledger(input_path: Path) -> tuple[list[dict[str, Any]], int]:
         parsed = json.loads(raw_text)
         if isinstance(parsed, list):
             events = [e for e in parsed if isinstance(e, Mapping)]
-    else:
+    elif raw_text.startswith("{") and ("\n" not in raw_text or '"events"' in raw_text):
+        try:
+            parsed_obj = json.loads(raw_text)
+            if isinstance(parsed_obj, Mapping) and isinstance(parsed_obj.get("events"), list):
+                events = [e for e in parsed_obj["events"] if isinstance(e, Mapping)]
+            elif isinstance(parsed_obj, Mapping):
+                events = [parsed_obj]
+        except json.JSONDecodeError:
+            pass
+
+    if not events and not raw_text.startswith("["):
         for line in raw_text.splitlines():
             line = line.strip()
             if not line:
@@ -385,9 +396,42 @@ def _parse_ifay_ledger(input_path: Path) -> tuple[list[dict[str, Any]], int]:
 
     for ev in events:
         ev_type = str(ev.get("event_type") or ev.get("type") or "").strip().lower()
-        event_id = str(ev.get("event_id") or ev.get("id") or "").strip()
+        event_id = str(ev.get("event_id") or ev.get("event_hash") or ev.get("id") or "").strip()
+        payload = ev.get("payload") if isinstance(ev.get("payload"), Mapping) else {}
 
-        # 1) 显式纠偏事件（human_correction / draft_corrected / guard_override）
+        # 0) @ifay/soul 创世主体事件（soul_genesis）：提取初始六维画像中的人类原型 Thought 条目
+        if ev_type == "soul_genesis" and isinstance(payload.get("initial_profile"), Mapping):
+            thought_map = payload["initial_profile"].get("thought")
+            if isinstance(thought_map, Mapping):
+                for subtype, items in thought_map.items():
+                    if not isinstance(items, list):
+                        continue
+                    for idx, item in enumerate(items):
+                        if not isinstance(item, Mapping):
+                            continue
+                        txt = str(item.get("text") or "").strip()
+                        if not txt:
+                            continue
+                        title = str(item.get("title") or f"Genesis {subtype}").strip()
+                        cat, dom = _infer_category_and_domain(
+                            f"{title}\n{txt}",
+                            explicit_domain=str(item.get("domain") or "") or None,
+                        )
+                        candidates.append(
+                            {
+                                "event_id": f"{event_id}:genesis:{subtype}:{idx}",
+                                "prompt": title,
+                                "output": txt,
+                                "redline": "",
+                                "category": cat,
+                                "domain": dom,
+                                "source": "prime_turn",
+                                "weight": 1.5,
+                            }
+                        )
+            continue
+
+        # 1) 显式纠偏事件（human_correction / draft_corrected / guard_override，兼容顶层与 @ifay/soul payload）
         is_correction = ev_type in (
             "human_correction",
             "draft_corrected",
@@ -397,12 +441,19 @@ def _parse_ifay_ledger(input_path: Path) -> tuple[list[dict[str, Any]], int]:
 
         if is_correction:
             prompt = str(
-                ev.get("prompt") or ev.get("instruction") or ev.get("query") or "Human Prime preference"
+                ev.get("prompt")
+                or payload.get("prompt_context")
+                or payload.get("prompt")
+                or ev.get("instruction")
+                or ev.get("query")
+                or "Human Prime preference"
             ).strip()
             corrected = str(
                 ev.get("corrected_reply")
                 or ev.get("human_correction")
                 or ev.get("preferred_reply")
+                or payload.get("preferred_output")
+                or payload.get("corrected_reply")
                 or ev.get("feedback")
                 or ev.get("output")
                 or ""
@@ -411,17 +462,24 @@ def _parse_ifay_ledger(input_path: Path) -> tuple[list[dict[str, Any]], int]:
                 continue
             cat, dom = _infer_category_and_domain(
                 f"{prompt}\n{corrected}",
-                explicit_domain=str(ev.get("domain") or "") or None,
+                explicit_domain=str(ev.get("domain") or payload.get("domain") or "") or None,
             )
             candidates.append(
                 {
                     "event_id": event_id,
                     "prompt": prompt,
                     "rejected_draft": str(
-                        ev.get("draft_reply") or ev.get("rejected_reply") or ""
+                        ev.get("draft_reply")
+                        or ev.get("rejected_reply")
+                        or payload.get("rejected_output")
+                        or ""
                     )[:300],
-                    "rejected_phrase": str(ev.get("rejected_phrase") or ""),
-                    "redline": str(ev.get("redline") or ""),
+                    "rejected_phrase": str(
+                        ev.get("rejected_phrase") or payload.get("rejected_phrase") or ""
+                    ),
+                    "redline": str(
+                        ev.get("redline") or payload.get("extracted_rule") or ""
+                    ),
                     "output": corrected,
                     "category": cat,
                     "domain": dom,
@@ -430,6 +488,32 @@ def _parse_ifay_ledger(input_path: Path) -> tuple[list[dict[str, Any]], int]:
                 }
             )
             continue
+
+        # 1b) @ifay/soul 主体新增思维与 DTP 语境归集事件（thought_added / dtp_context_ingested）
+        if ev_type in ("thought_added", "dtp_context_ingested") and isinstance(
+            payload.get("thought"), Mapping
+        ):
+            th = payload["thought"]
+            txt = str(th.get("text") or "").strip()
+            if txt:
+                title = str(th.get("title") or f"Human Prime {ev_type}").strip()
+                cat, dom = _infer_category_and_domain(
+                    f"{title}\n{txt}",
+                    explicit_domain=str(th.get("domain") or "") or None,
+                )
+                candidates.append(
+                    {
+                        "event_id": event_id,
+                        "prompt": title,
+                        "output": txt,
+                        "redline": "",
+                        "category": cat,
+                        "domain": dom,
+                        "source": "prime_turn",
+                        "weight": 1.5,
+                    }
+                )
+                continue
 
         # 2) 主体回流的人类原型亲自输入/决策/笔记事件
         author = str(ev.get("author") or ev.get("role") or "").strip().lower()
